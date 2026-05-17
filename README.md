@@ -19,6 +19,13 @@ go run ./cmd/dwf cancel <job-id>
 go run ./cmd/dwf replay <job-id>
 ```
 
+Run the Postgres-backed integration tests against a local database:
+
+```bash
+go run ./cmd/dwf migrate
+make integration-test
+```
+
 ## Architecture
 
 - `cmd/dwf`: single binary with `api`, `worker`, and CLI commands.

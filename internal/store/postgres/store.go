@@ -176,8 +176,8 @@ func (s *Store) Fail(ctx context.Context, jobID, workerID string, cause error) e
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE jobs
-		SET status = $3, error = $4, run_after = $5, lease_owner = NULL, lease_expires_at = NULL,
-			updated_at = now(), completed_at = CASE WHEN $3 = 'dead_letter' THEN now() ELSE NULL END
+		SET status = $3::job_status, error = $4, run_after = $5, lease_owner = NULL, lease_expires_at = NULL,
+			updated_at = now(), completed_at = CASE WHEN $3::job_status = 'dead_letter' THEN now() ELSE NULL END
 		WHERE id = $1 AND lease_owner = $2
 	`, jobID, workerID, next, cause.Error(), runAfter)
 	if err != nil {

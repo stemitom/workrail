@@ -1,10 +1,15 @@
-.PHONY: fmt test run-api run-worker compose-up compose-down
+.PHONY: fmt test integration-test run-api run-worker compose-up compose-down
+
+TEST_DATABASE_URL ?= postgres://durable:durable@localhost:5432/durable?sslmode=disable
 
 fmt:
 	gofmt -w ./cmd ./internal
 
 test:
 	go test ./...
+
+integration-test:
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test ./internal/store/postgres -run Integration -count=1
 
 run-api:
 	go run ./cmd/dwf api
@@ -17,4 +22,3 @@ compose-up:
 
 compose-down:
 	docker compose down -v
-
