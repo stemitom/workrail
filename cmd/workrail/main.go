@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"workrail/internal/api"
 	appconfig "workrail/internal/config"
 	"workrail/internal/engine"
+	"workrail/internal/migrations"
 	"workrail/internal/observability"
 	"workrail/internal/store/postgres"
 
@@ -84,25 +86,54 @@ func parseGlobalArgs(args []string) (string, []string, error) {
 }
 
 func migrate(ctx context.Context, cfg appconfig.Config, args []string) error {
-	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
-	file := fs.String("file", "migrations/001_init.sql", "migration file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	sql, err := os.ReadFile(*file)
+	command, dir, err := parseMigrateArgs(args)
 	if err != nil {
 		return err
+	}
+	if command != "up" {
+		return fmt.Errorf("unknown migrate command %q", command)
 	}
 	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	if _, err := db.Exec(ctx, string(sql)); err != nil {
+	applied, err := migrations.Up(ctx, db, dir)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "applied %s\n", *file)
+	if len(applied) == 0 {
+		fmt.Fprintln(os.Stdout, "migrations already up to date")
+		return nil
+	}
+	for _, migration := range applied {
+		fmt.Fprintf(os.Stdout, "applied %s %s\n", migration.Version, migration.Name)
+	}
 	return nil
+}
+
+func parseMigrateArgs(args []string) (string, string, error) {
+	command := "up"
+	dir := "migrations"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "up":
+			command = "up"
+		case "--dir":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--dir requires a path")
+			}
+			dir = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "--dir=") {
+				dir = strings.TrimPrefix(args[i], "--dir=")
+				continue
+			}
+			return "", "", fmt.Errorf("unknown migrate argument %q", args[i])
+		}
+	}
+	return command, dir, nil
 }
 
 func runAPI(ctx context.Context, cfg appconfig.Config) error {
@@ -468,7 +499,7 @@ func usage() {
   --config workrail.yaml <command>
   api
   worker
-  migrate [--file migrations/001_init.sql]
+  migrate up [--dir migrations]
   enqueue --queue default --type echo --payload '{"message":"hi"}' [--idempotency-key key]
   list [--limit 20] [--queue default] [--status queued] [--type echo] [--json]
   inspect [--json] <job-id>

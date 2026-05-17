@@ -12,7 +12,7 @@ The API listens on `http://localhost:8080`.
 Worker Prometheus metrics listen on `http://localhost:9090` in Docker Compose.
 
 ```bash
-go run ./cmd/workrail migrate
+go run ./cmd/workrail migrate up
 go run ./cmd/workrail enqueue --queue default --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
 go run ./cmd/workrail list
 go run ./cmd/workrail list --queue default
@@ -37,7 +37,7 @@ go run ./cmd/workrail --config workrail.yaml worker
 Run the Postgres-backed integration tests against a local database:
 
 ```bash
-go run ./cmd/workrail migrate
+go run ./cmd/workrail migrate up
 make integration-test
 ```
 
@@ -48,7 +48,7 @@ make integration-test
 - `internal/engine`: job model, state machine, workflow registry, worker runtime.
 - `internal/store/postgres`: durable SQL implementation using row locks and leases.
 - `internal/observability`: OpenTelemetry and Prometheus setup.
-- `migrations`: PostgreSQL schema.
+- `migrations`: versioned PostgreSQL migrations.
 
 ## State Machine
 
@@ -169,3 +169,13 @@ Workrail loads defaults first, then `workrail.yaml` if it exists, then environme
 - `WORKRAIL_WORKER_CONCURRENCY`: number of jobs a worker runs concurrently. Defaults to `4`.
 - `WORKRAIL_SHUTDOWN_TIMEOUT`: graceful worker drain timeout. Defaults to `30s`.
 - `WORKRAIL_WORKER_METRICS_ADDR`: worker Prometheus metrics listen address. Defaults to `:9090`; set empty to disable.
+
+## Migrations
+
+Run all pending migrations:
+
+```bash
+go run ./cmd/workrail migrate up
+```
+
+Workrail records applied versions in `schema_migrations`, so rerunning the command is safe. Migration files must be named like `001_init.sql`.
