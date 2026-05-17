@@ -13,4 +13,5 @@ type Store interface {
 	Replay(ctx context.Context, jobID string) (Job, error)
 	Get(ctx context.Context, jobID string) (Job, []Event, error)
 	List(ctx context.Context, opts ListOptions) ([]Job, error)
+	QueueDepth(ctx context.Context) ([]QueueDepth, error)
 }

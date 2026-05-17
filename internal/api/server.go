@@ -23,6 +23,7 @@ type Server struct {
 
 func New(store engine.Store, logger *slog.Logger) *Server {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
+	observability.RegisterQueueDepthCollector(store)
 	s.routes()
 	return s
 }
@@ -60,7 +61,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	if !inserted {
 		status = http.StatusOK
 	}
-	observability.JobsEnqueued.WithLabelValues(job.WorkflowType).Inc()
+	observability.JobsEnqueued.WithLabelValues(job.Queue, job.WorkflowType).Inc()
 	writeJSON(w, status, job)
 }
 

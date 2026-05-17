@@ -22,6 +22,7 @@ import (
 	"workrail/internal/store/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const defaultDatabaseURL = "postgres://durable:durable@localhost:5432/durable?sslmode=disable"
@@ -122,6 +123,10 @@ func runWorker(ctx context.Context) error {
 		return err
 	}
 	defer store.Close()
+	observability.RegisterQueueDepthCollector(store)
+	if err := startMetricsServer(ctx, envAllowEmpty("WORKRAIL_WORKER_METRICS_ADDR", ":9090")); err != nil {
+		return err
+	}
 	hostname, _ := os.Hostname()
 	workerID := envAny([]string{"WORKRAIL_WORKER_ID", "DWF_WORKER_ID"}, hostname)
 	if workerID == "" {
@@ -139,6 +144,30 @@ func runWorker(ctx context.Context) error {
 		Logger:          slog.Default(),
 	}
 	return w.Run(ctx)
+}
+
+func startMetricsServer(ctx context.Context, addr string) error {
+	if addr == "" {
+		return nil
+	}
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           promhttp.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		slog.Info("worker metrics listening", "addr", addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("worker metrics server failed", "error", err)
+		}
+	}()
+	return nil
 }
 
 func enqueue(ctx context.Context, args []string) error {
@@ -415,6 +444,14 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envAllowEmpty(key, fallback string) string {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	return value
 }
 
 func envAny(keys []string, fallback string) string {

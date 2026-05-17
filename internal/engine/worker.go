@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"workrail/internal/observability"
+
 	"go.opentelemetry.io/otel"
 )
 
@@ -25,6 +27,7 @@ type Worker struct {
 
 func (w *Worker) Run(ctx context.Context) error {
 	w.applyDefaults()
+	observability.WorkerConfiguredConcurrency.WithLabelValues(w.ID, w.Queue).Set(float64(w.Concurrency))
 
 	execCtx, cancelExec := context.WithCancel(context.Background())
 	defer cancelExec()
@@ -51,6 +54,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		for _, job := range jobs {
+			observability.JobsClaimed.WithLabelValues(job.Queue, job.WorkflowType).Inc()
 			sem <- struct{}{}
 			wg.Add(1)
 			go func(job Job) {
@@ -109,6 +113,8 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 				recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				if err := w.Store.Heartbeat(recordCtx, job.ID, w.ID); err != nil {
 					w.logger().Warn("heartbeat failed", "job_id", job.ID, "error", err)
+				} else {
+					observability.JobHeartbeats.WithLabelValues(job.Queue).Inc()
 				}
 				recordCancel()
 			}
@@ -116,6 +122,8 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 	}()
 
 	w.logger().Info("job started", "job_id", job.ID, "workflow_type", job.WorkflowType, "attempt", job.Attempt)
+	observability.WorkerInFlightJobs.WithLabelValues(job.Queue, job.WorkflowType).Inc()
+	defer observability.WorkerInFlightJobs.WithLabelValues(job.Queue, job.WorkflowType).Dec()
 	result, err := w.executeSafely(jobCtx, job)
 	cancel()
 	<-heartbeatDone
@@ -126,6 +134,8 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 		defer recordCancel()
 		if failErr := w.Store.Fail(recordCtx, job.ID, w.ID, err); failErr != nil {
 			w.logger().Error("record failure failed", "job_id", job.ID, "error", failErr)
+		} else {
+			observability.JobsFailed.WithLabelValues(job.Queue, job.WorkflowType).Inc()
 		}
 		return
 	}
@@ -136,6 +146,7 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 		w.logger().Error("complete failed", "job_id", job.ID, "error", err)
 		return
 	}
+	observability.JobsSucceeded.WithLabelValues(job.Queue, job.WorkflowType).Inc()
 	w.logger().Info("job succeeded", "job_id", job.ID)
 }
 

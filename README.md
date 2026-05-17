@@ -9,6 +9,7 @@ docker compose up --build
 ```
 
 The API listens on `http://localhost:8080`.
+Worker Prometheus metrics listen on `http://localhost:9090` in Docker Compose.
 
 ```bash
 go run ./cmd/workrail migrate
@@ -90,6 +91,21 @@ WORKRAIL_QUEUE=billing go run ./cmd/workrail worker
 
 Workers only claim jobs from their configured queue. Jobs default to the `default` queue when no queue is provided.
 
+## Metrics
+
+The API exposes Prometheus metrics at `/metrics`. Standalone workers expose metrics on `WORKRAIL_WORKER_METRICS_ADDR`, defaulting to `:9090`.
+
+Key metrics include:
+
+- `workrail_jobs_enqueued_total{queue,workflow_type}`
+- `workrail_jobs_claimed_total{queue,workflow_type}`
+- `workrail_jobs_succeeded_total{queue,workflow_type}`
+- `workrail_jobs_failed_total{queue,workflow_type}`
+- `workrail_job_heartbeats_total{queue}`
+- `workrail_worker_inflight_jobs{queue,workflow_type}`
+- `workrail_worker_configured_concurrency{worker_id,queue}`
+- `workrail_queue_depth{queue,status}`
+
 ## Workflow Definitions
 
 Built-in Go workflows live in `internal/engine/workflows.go`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:
@@ -142,3 +158,4 @@ job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
 - `WORKRAIL_WORKER_ID`: worker identity. Defaults to hostname.
 - `WORKRAIL_WORKER_CONCURRENCY`: number of jobs a worker runs concurrently. Defaults to `4`.
 - `WORKRAIL_SHUTDOWN_TIMEOUT`: graceful worker drain timeout. Defaults to `30s`.
+- `WORKRAIL_WORKER_METRICS_ADDR`: worker Prometheus metrics listen address. Defaults to `:9090`; set empty to disable.

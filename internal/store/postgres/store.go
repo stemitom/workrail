@@ -292,6 +292,30 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 	return jobs, rows.Err()
 }
 
+func (s *Store) QueueDepth(ctx context.Context) ([]engine.QueueDepth, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT queue, status, count(*)
+		FROM jobs
+		GROUP BY queue, status
+		ORDER BY queue, status
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var depths []engine.QueueDepth
+	for rows.Next() {
+		var depth engine.QueueDepth
+		var status engine.Status
+		if err := rows.Scan(&depth.Queue, &status, &depth.Count); err != nil {
+			return nil, err
+		}
+		depth.Status = string(status)
+		depths = append(depths, depth)
+	}
+	return depths, rows.Err()
+}
+
 func (s *Store) events(ctx context.Context, jobID string) ([]engine.Event, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, job_id, event_type, details, created_at

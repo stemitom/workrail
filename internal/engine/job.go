@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"workrail/internal/observability"
 )
 
 type Status string
@@ -46,6 +48,8 @@ type Event struct {
 	Details   json.RawMessage `json:"details"`
 	CreatedAt time.Time       `json:"created_at"`
 }
+
+type QueueDepth = observability.QueueDepth
 
 type EnqueueRequest struct {
 	Queue          string          `json:"queue"`

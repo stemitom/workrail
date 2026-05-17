@@ -36,6 +36,9 @@ services:
       WORKRAIL_QUEUE: default
       WORKRAIL_WORKER_CONCURRENCY: 4
       WORKRAIL_SHUTDOWN_TIMEOUT: 30s
+      WORKRAIL_WORKER_METRICS_ADDR: :9090
+    ports:
+      - "9090:9090"
     depends_on:
       postgres:
         condition: service_healthy

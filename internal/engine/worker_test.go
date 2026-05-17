@@ -145,3 +145,7 @@ func (s *workerTestStore) Get(context.Context, string) (Job, []Event, error) {
 func (s *workerTestStore) List(context.Context, ListOptions) ([]Job, error) {
 	return nil, nil
 }
+
+func (s *workerTestStore) QueueDepth(context.Context) ([]QueueDepth, error) {
+	return nil, nil
+}

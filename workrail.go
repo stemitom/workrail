@@ -31,6 +31,7 @@ type Job = engine.Job
 type Event = engine.Event
 type EnqueueRequest = engine.EnqueueRequest
 type ListOptions = engine.ListOptions
+type QueueDepth = engine.QueueDepth
 type WorkflowFunc = engine.WorkflowFunc
 
 type Options struct {
@@ -111,6 +112,10 @@ func (c *Client) List(ctx context.Context, limit int) ([]Job, error) {
 
 func (c *Client) ListJobs(ctx context.Context, opts ListOptions) ([]Job, error) {
 	return c.store.List(ctx, opts)
+}
+
+func (c *Client) QueueDepth(ctx context.Context) ([]QueueDepth, error) {
+	return c.store.QueueDepth(ctx)
 }
 
 func (c *Client) Cancel(ctx context.Context, jobID string) error {

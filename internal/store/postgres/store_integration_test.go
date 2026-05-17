@@ -153,6 +153,17 @@ func TestIntegrationClaimRespectsQueue(t *testing.T) {
 	if len(billingJobs) != 1 || billingJobs[0].ID != billingJob.ID {
 		t.Fatalf("billing list = %+v, want %s", billingJobs, billingJob.ID)
 	}
+
+	depths, err := store.QueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	if !hasQueueDepth(depths, "emails", string(engine.StatusRunning), 1) {
+		t.Fatalf("depths = %+v, want emails running count", depths)
+	}
+	if !hasQueueDepth(depths, "billing", string(engine.StatusQueued), 1) {
+		t.Fatalf("depths = %+v, want billing queued count", depths)
+	}
 }
 
 func TestIntegrationRetryThenDeadLetter(t *testing.T) {
@@ -282,4 +293,13 @@ func TestIntegrationCancelAndReplay(t *testing.T) {
 	if replayed.Status != engine.StatusQueued {
 		t.Fatalf("replayed status = %s, want %s", replayed.Status, engine.StatusQueued)
 	}
+}
+
+func hasQueueDepth(depths []engine.QueueDepth, queue, status string, count int64) bool {
+	for _, depth := range depths {
+		if depth.Queue == queue && depth.Status == status && depth.Count == count {
+			return true
+		}
+	}
+	return false
 }
