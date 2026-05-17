@@ -204,6 +204,25 @@ func (s *Store) Cancel(ctx context.Context, jobID string) error {
 	return s.appendEvent(ctx, jobID, "job.canceled", map[string]any{})
 }
 
+func (s *Store) RetryDeadLetter(ctx context.Context, jobID string) (engine.Job, error) {
+	var job engine.Job
+	err := s.db.QueryRow(ctx, `
+		UPDATE jobs
+		SET status = 'queued', attempt = 0, run_after = now(), lease_owner = NULL, lease_expires_at = NULL,
+			heartbeat_at = NULL, error = NULL, updated_at = now(), completed_at = NULL
+		WHERE id = $1 AND status = 'dead_letter'
+		RETURNING id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
+	`, jobID).Scan(jobScanTargets(&job)...)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return job, engine.ErrInvalidTransition
+		}
+		return job, err
+	}
+	return job, s.appendEvent(ctx, job.ID, "job.dlq_retried", map[string]any{})
+}
+
 func (s *Store) Replay(ctx context.Context, jobID string) (engine.Job, error) {
 	var job engine.Job
 	err := s.db.QueryRow(ctx, `
@@ -238,17 +257,22 @@ func (s *Store) Get(ctx context.Context, jobID string) (engine.Job, []engine.Eve
 	return job, events, err
 }
 
-func (s *Store) List(ctx context.Context, limit int) ([]engine.Job, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job, error) {
+	if opts.Limit <= 0 || opts.Limit > 100 {
+		opts.Limit = 50
+	}
+	if !engine.IsValidStatus(opts.Status) {
+		return nil, engine.ErrInvalidStatus
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
 		FROM jobs
+		WHERE ($2 = '' OR status = $2::job_status)
+			AND ($3 = '' OR workflow_type = $3)
 		ORDER BY created_at DESC
 		LIMIT $1
-	`, limit)
+	`, opts.Limit, string(opts.Status), opts.WorkflowType)
 	if err != nil {
 		return nil, err
 	}

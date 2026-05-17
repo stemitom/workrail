@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"workrail/internal/api"
@@ -49,6 +51,8 @@ func run() error {
 		return enqueue(ctx, os.Args[2:])
 	case "list":
 		return listJobs(ctx, os.Args[2:])
+	case "dlq":
+		return dlq(ctx, os.Args[2:])
 	case "inspect":
 		return inspectJob(ctx, os.Args[2:])
 	case "cancel":
@@ -140,6 +144,7 @@ func enqueue(ctx context.Context, args []string) error {
 	payload := fs.String("payload", "{}", "JSON or YAML payload")
 	key := fs.String("idempotency-key", "", "idempotency key")
 	maxAttempts := fs.Int("max-attempts", 3, "max attempts")
+	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -154,16 +159,27 @@ func enqueue(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	job, _, err := store.Enqueue(ctx, req)
+	job, inserted, err := store.Enqueue(ctx, req)
 	if err != nil {
 		return err
 	}
-	return printJSON(job)
+	if *jsonOut {
+		return printJSON(job)
+	}
+	verb := "enqueued"
+	if !inserted {
+		verb = "exists"
+	}
+	fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n", verb, job.ID, job.Status)
+	return nil
 }
 
 func listJobs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "limit")
+	status := fs.String("status", "", "filter by status")
+	typ := fs.String("type", "", "filter by workflow type")
+	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -172,15 +188,27 @@ func listJobs(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	jobs, err := store.List(ctx, *limit)
+	jobs, err := store.List(ctx, engine.ListOptions{
+		Limit:        *limit,
+		Status:       engine.Status(*status),
+		WorkflowType: *typ,
+	})
 	if err != nil {
 		return err
 	}
-	return printJSON(jobs)
+	if *jsonOut {
+		return printJSON(jobs)
+	}
+	return printJobsTable(jobs)
 }
 
 func inspectJob(ctx context.Context, args []string) error {
-	if len(args) != 1 {
+	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: workrail inspect <job-id>")
 	}
 	store, err := postgres.New(ctx, databaseURL())
@@ -188,9 +216,12 @@ func inspectJob(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	job, events, err := store.Get(ctx, args[0])
+	job, events, err := store.Get(ctx, fs.Arg(0))
 	if err != nil {
 		return err
+	}
+	if !*jsonOut {
+		return printJobDetails(job, events)
 	}
 	return printJSON(map[string]any{"job": job, "events": events})
 }
@@ -223,10 +254,145 @@ func replayJob(ctx context.Context, args []string) error {
 	return printJSON(job)
 }
 
+func dlq(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: workrail dlq <list|retry>")
+	}
+	switch args[0] {
+	case "list":
+		return listDeadLetters(ctx, args[1:])
+	case "retry":
+		return retryDeadLetter(ctx, args[1:])
+	default:
+		return fmt.Errorf("unknown dlq command %q", args[0])
+	}
+}
+
+func listDeadLetters(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("dlq list", flag.ExitOnError)
+	limit := fs.Int("limit", 20, "limit")
+	typ := fs.String("type", "", "filter by workflow type")
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	store, err := postgres.New(ctx, databaseURL())
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	jobs, err := store.List(ctx, engine.ListOptions{
+		Limit:        *limit,
+		Status:       engine.StatusDeadLetter,
+		WorkflowType: *typ,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return printJSON(jobs)
+	}
+	return printJobsTable(jobs)
+}
+
+func retryDeadLetter(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("dlq retry", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: workrail dlq retry <job-id>")
+	}
+	store, err := postgres.New(ctx, databaseURL())
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	job, err := store.RetryDeadLetter(ctx, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return printJSON(job)
+	}
+	fmt.Fprintf(os.Stdout, "retried\t%s\t%s\n", job.ID, job.Status)
+	return nil
+}
+
 func printJSON(value any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(value)
+}
+
+func printJobsTable(jobs []engine.Job) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTYPE\tSTATUS\tATTEMPT\tMAX\tRUN_AFTER\tUPDATED")
+	for _, job := range jobs {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+			shortID(job.ID),
+			job.WorkflowType,
+			job.Status,
+			job.Attempt,
+			job.MaxAttempts,
+			formatTime(job.RunAfter),
+			formatTime(job.UpdatedAt),
+		)
+	}
+	return w.Flush()
+}
+
+func printJobDetails(job engine.Job, events []engine.Event) error {
+	fmt.Fprintf(os.Stdout, "id: %s\n", job.ID)
+	fmt.Fprintf(os.Stdout, "type: %s\n", job.WorkflowType)
+	fmt.Fprintf(os.Stdout, "status: %s\n", job.Status)
+	fmt.Fprintf(os.Stdout, "attempt: %d/%d\n", job.Attempt, job.MaxAttempts)
+	fmt.Fprintf(os.Stdout, "run_after: %s\n", formatTime(job.RunAfter))
+	if job.Error != nil {
+		fmt.Fprintf(os.Stdout, "error: %s\n", *job.Error)
+	}
+	if job.LeaseOwner != nil {
+		fmt.Fprintf(os.Stdout, "lease_owner: %s\n", *job.LeaseOwner)
+	}
+	if len(job.Payload) > 0 {
+		fmt.Fprintf(os.Stdout, "payload: %s\n", compactJSON(job.Payload))
+	}
+	if len(job.Result) > 0 {
+		fmt.Fprintf(os.Stdout, "result: %s\n", compactJSON(job.Result))
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	fmt.Fprintln(os.Stdout, "\nevents:")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTYPE\tCREATED\tDETAILS")
+	for _, event := range events {
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", event.ID, event.EventType, formatTime(event.CreatedAt), compactJSON(event.Details))
+	}
+	return w.Flush()
+}
+
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func compactJSON(data []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, data); err != nil {
+		return string(data)
+	}
+	return buf.String()
 }
 
 func databaseURL() string {
@@ -255,8 +421,10 @@ func usage() {
   worker
   migrate [--file migrations/001_init.sql]
   enqueue --type echo --payload '{"message":"hi"}' [--idempotency-key key]
-  list [--limit 20]
-  inspect <job-id>
+  list [--limit 20] [--status queued] [--type echo] [--json]
+  inspect [--json] <job-id>
   replay <job-id>
-  cancel <job-id>`)
+  cancel <job-id>
+  dlq list [--limit 20] [--type echo] [--json]
+  dlq retry [--json] <job-id>`)
 }

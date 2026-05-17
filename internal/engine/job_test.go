@@ -41,3 +41,12 @@ func TestBackoff(t *testing.T) {
 		}
 	}
 }
+
+func TestIsValidStatus(t *testing.T) {
+	if !IsValidStatus(StatusQueued) {
+		t.Fatal("queued should be valid")
+	}
+	if IsValidStatus(Status("nope")) {
+		t.Fatal("unknown status should be invalid")
+	}
+}

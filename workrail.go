@@ -30,6 +30,7 @@ const (
 type Job = engine.Job
 type Event = engine.Event
 type EnqueueRequest = engine.EnqueueRequest
+type ListOptions = engine.ListOptions
 type WorkflowFunc = engine.WorkflowFunc
 
 type Options struct {
@@ -103,11 +104,19 @@ func (c *Client) Get(ctx context.Context, jobID string) (Job, []Event, error) {
 }
 
 func (c *Client) List(ctx context.Context, limit int) ([]Job, error) {
-	return c.store.List(ctx, limit)
+	return c.store.List(ctx, ListOptions{Limit: limit})
+}
+
+func (c *Client) ListJobs(ctx context.Context, opts ListOptions) ([]Job, error) {
+	return c.store.List(ctx, opts)
 }
 
 func (c *Client) Cancel(ctx context.Context, jobID string) error {
 	return c.store.Cancel(ctx, jobID)
+}
+
+func (c *Client) RetryDeadLetter(ctx context.Context, jobID string) (Job, error) {
+	return c.store.RetryDeadLetter(ctx, jobID)
 }
 
 func (c *Client) Replay(ctx context.Context, jobID string) (Job, error) {

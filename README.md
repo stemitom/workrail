@@ -14,10 +14,15 @@ The API listens on `http://localhost:8080`.
 go run ./cmd/workrail migrate
 go run ./cmd/workrail enqueue --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
 go run ./cmd/workrail list
+go run ./cmd/workrail list --status dead_letter
 go run ./cmd/workrail inspect <job-id>
+go run ./cmd/workrail dlq list
+go run ./cmd/workrail dlq retry <job-id>
 go run ./cmd/workrail cancel <job-id>
 go run ./cmd/workrail replay <job-id>
 ```
+
+CLI commands print compact tables for humans by default. Add `--json` to `enqueue`, `list`, `inspect`, and `dlq` commands when scripting.
 
 Run the Postgres-backed integration tests against a local database:
 
@@ -45,6 +50,31 @@ queued -> running -> succeeded
 ```
 
 Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path.
+
+## Operations
+
+List recent jobs:
+
+```bash
+go run ./cmd/workrail list --limit 50
+go run ./cmd/workrail list --status queued
+go run ./cmd/workrail list --type send_email
+```
+
+Inspect one job with its event history:
+
+```bash
+go run ./cmd/workrail inspect <job-id>
+```
+
+Operate the dead-letter queue:
+
+```bash
+go run ./cmd/workrail dlq list
+go run ./cmd/workrail dlq retry <job-id>
+```
+
+Retrying a dead-lettered job moves it back to `queued`, clears the last error, and resets the attempt counter.
 
 ## Workflow Definitions
 

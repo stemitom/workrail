@@ -60,9 +60,16 @@ type ClaimOptions struct {
 	Limit         int
 }
 
+type ListOptions struct {
+	Limit        int
+	Status       Status
+	WorkflowType string
+}
+
 var (
 	ErrNotFound          = errors.New("job not found")
 	ErrInvalidTransition = errors.New("invalid job state transition")
+	ErrInvalidStatus     = errors.New("invalid job status")
 	ErrCanceled          = errors.New("job canceled")
 )
 
@@ -95,4 +102,13 @@ func Backoff(attempt int) time.Duration {
 		return time.Minute
 	}
 	return delay
+}
+
+func IsValidStatus(status Status) bool {
+	switch status {
+	case "", StatusQueued, StatusRunning, StatusRetrying, StatusSucceeded, StatusFailed, StatusDeadLetter, StatusCanceled:
+		return true
+	default:
+		return false
+	}
 }

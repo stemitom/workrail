@@ -146,6 +146,25 @@ func TestIntegrationRetryThenDeadLetter(t *testing.T) {
 	if job.Error == nil || *job.Error != "boom" {
 		t.Fatalf("error = %v, want boom", job.Error)
 	}
+
+	deadLetters, err := store.List(ctx, engine.ListOptions{Status: engine.StatusDeadLetter})
+	if err != nil {
+		t.Fatalf("list dead letters: %v", err)
+	}
+	if len(deadLetters) != 1 || deadLetters[0].ID != enqueued.ID {
+		t.Fatalf("dead letters = %+v, want %s", deadLetters, enqueued.ID)
+	}
+
+	retried, err := store.RetryDeadLetter(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("retry dead letter: %v", err)
+	}
+	if retried.Status != engine.StatusQueued {
+		t.Fatalf("retried status = %s, want %s", retried.Status, engine.StatusQueued)
+	}
+	if retried.Attempt != 0 {
+		t.Fatalf("retried attempt = %d, want 0", retried.Attempt)
+	}
 }
 
 func TestIntegrationExpiredLeaseCanBeReclaimed(t *testing.T) {

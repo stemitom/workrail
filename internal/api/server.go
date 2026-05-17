@@ -34,9 +34,11 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("POST /jobs", s.enqueue)
 	s.mux.HandleFunc("GET /jobs", s.list)
+	s.mux.HandleFunc("GET /dlq", s.deadLetters)
 	s.mux.HandleFunc("GET /jobs/{id}", s.inspect)
 	s.mux.HandleFunc("POST /jobs/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /jobs/{id}/replay", s.replay)
+	s.mux.HandleFunc("POST /jobs/{id}/retry", s.retryDeadLetter)
 	s.mux.Handle("GET /metrics", promhttp.Handler())
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -64,7 +66,25 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	jobs, err := s.store.List(r.Context(), limit)
+	jobs, err := s.store.List(r.Context(), engine.ListOptions{
+		Limit:        limit,
+		Status:       engine.Status(r.URL.Query().Get("status")),
+		WorkflowType: r.URL.Query().Get("type"),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (s *Server) deadLetters(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	jobs, err := s.store.List(r.Context(), engine.ListOptions{
+		Limit:        limit,
+		Status:       engine.StatusDeadLetter,
+		WorkflowType: r.URL.Query().Get("type"),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -98,12 +118,23 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, job)
 }
 
+func (s *Server) retryDeadLetter(w http.ResponseWriter, r *http.Request) {
+	job, err := s.store.RetryDeadLetter(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, engine.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
 	case errors.Is(err, engine.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, engine.ErrInvalidStatus):
+		writeError(w, http.StatusBadRequest, err)
 	default:
 		writeError(w, http.StatusInternalServerError, err)
 	}
