@@ -26,6 +26,14 @@ go run ./cmd/workrail replay <job-id>
 
 CLI commands print compact tables for humans by default. Add `--json` to `enqueue`, `list`, `inspect`, and `dlq` commands when scripting.
 
+Use a config file instead of environment variables:
+
+```bash
+cp workrail.example.yaml workrail.yaml
+go run ./cmd/workrail --config workrail.yaml api
+go run ./cmd/workrail --config workrail.yaml worker
+```
+
 Run the Postgres-backed integration tests against a local database:
 
 ```bash
@@ -151,6 +159,8 @@ job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
 ```
 
 ## Environment
+
+Workrail loads defaults first, then `workrail.yaml` if it exists, then environment variables. Set `WORKRAIL_CONFIG=/path/to/workrail.yaml` or pass `--config /path/to/workrail.yaml` before the command.
 
 - `DATABASE_URL`: PostgreSQL connection string. Defaults to `postgres://durable:durable@localhost:5432/durable?sslmode=disable`.
 - `WORKRAIL_API_ADDR`: API listen address. Defaults to `:8080`.

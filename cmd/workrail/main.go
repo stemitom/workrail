@@ -11,12 +11,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"workrail/internal/api"
+	appconfig "workrail/internal/config"
 	"workrail/internal/engine"
 	"workrail/internal/observability"
 	"workrail/internal/store/postgres"
@@ -24,8 +24,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-const defaultDatabaseURL = "postgres://durable:durable@localhost:5432/durable?sslmode=disable"
 
 func main() {
 	if err := run(); err != nil && !errors.Is(err, context.Canceled) {
@@ -35,39 +33,57 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) < 2 {
+	configPath, args, err := parseGlobalArgs(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if len(args) < 1 {
 		usage()
 		return nil
+	}
+	cfg, err := appconfig.Load(configPath)
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "api":
-		return runAPI(ctx)
+		return runAPI(ctx, cfg)
 	case "worker":
-		return runWorker(ctx)
+		return runWorker(ctx, cfg)
 	case "migrate":
-		return migrate(ctx, os.Args[2:])
+		return migrate(ctx, cfg, args[1:])
 	case "enqueue":
-		return enqueue(ctx, os.Args[2:])
+		return enqueue(ctx, cfg, args[1:])
 	case "list":
-		return listJobs(ctx, os.Args[2:])
+		return listJobs(ctx, cfg, args[1:])
 	case "dlq":
-		return dlq(ctx, os.Args[2:])
+		return dlq(ctx, cfg, args[1:])
 	case "inspect":
-		return inspectJob(ctx, os.Args[2:])
+		return inspectJob(ctx, cfg, args[1:])
 	case "cancel":
-		return cancelJob(ctx, os.Args[2:])
+		return cancelJob(ctx, cfg, args[1:])
 	case "replay":
-		return replayJob(ctx, os.Args[2:])
+		return replayJob(ctx, cfg, args[1:])
 	default:
 		usage()
-		return fmt.Errorf("unknown command %q", os.Args[1])
+		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-func migrate(ctx context.Context, args []string) error {
+func parseGlobalArgs(args []string) (string, []string, error) {
+	if len(args) >= 2 && (args[0] == "--config" || args[0] == "-config") {
+		return args[1], args[2:], nil
+	}
+	if len(args) == 1 && (args[0] == "--config" || args[0] == "-config") {
+		return "", nil, fmt.Errorf("--config requires a path")
+	}
+	return "", args, nil
+}
+
+func migrate(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
 	file := fs.String("file", "migrations/001_init.sql", "migration file")
 	if err := fs.Parse(args); err != nil {
@@ -77,7 +93,7 @@ func migrate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	db, err := pgxpool.New(ctx, databaseURL())
+	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -89,15 +105,15 @@ func migrate(ctx context.Context, args []string) error {
 	return nil
 }
 
-func runAPI(ctx context.Context) error {
+func runAPI(ctx context.Context, cfg appconfig.Config) error {
 	observability.Init("workrail-api")
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	addr := envAny([]string{"WORKRAIL_API_ADDR", "DWF_API_ADDR"}, ":8080")
+	addr := cfg.API.Addr
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           api.New(store, slog.Default()).Handler(),
@@ -116,31 +132,34 @@ func runAPI(ctx context.Context) error {
 	return nil
 }
 
-func runWorker(ctx context.Context) error {
+func runWorker(ctx context.Context, cfg appconfig.Config) error {
 	observability.Init("workrail-worker")
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	observability.RegisterQueueDepthCollector(store)
-	if err := startMetricsServer(ctx, envAllowEmpty("WORKRAIL_WORKER_METRICS_ADDR", ":9090")); err != nil {
+	if err := startMetricsServer(ctx, cfg.Worker.MetricsAddr); err != nil {
 		return err
 	}
 	hostname, _ := os.Hostname()
-	workerID := envAny([]string{"WORKRAIL_WORKER_ID", "DWF_WORKER_ID"}, hostname)
+	workerID := cfg.Worker.ID
+	if workerID == "" {
+		workerID = hostname
+	}
 	if workerID == "" {
 		workerID = "worker"
 	}
 	w := &engine.Worker{
 		ID:              workerID,
-		Queue:           env("WORKRAIL_QUEUE", "default"),
+		Queue:           cfg.Worker.Queue,
 		Store:           store,
 		Registry:        engine.NewRegistry(),
 		PollInterval:    time.Second,
 		LeaseDuration:   30 * time.Second,
-		ShutdownTimeout: envDuration("WORKRAIL_SHUTDOWN_TIMEOUT", 30*time.Second),
-		Concurrency:     envInt("WORKRAIL_WORKER_CONCURRENCY", 4),
+		ShutdownTimeout: parseDuration(cfg.Worker.ShutdownTimeout, 30*time.Second),
+		Concurrency:     cfg.Worker.Concurrency,
 		Logger:          slog.Default(),
 	}
 	return w.Run(ctx)
@@ -170,7 +189,7 @@ func startMetricsServer(ctx context.Context, addr string) error {
 	return nil
 }
 
-func enqueue(ctx context.Context, args []string) error {
+func enqueue(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("enqueue", flag.ExitOnError)
 	queue := fs.String("queue", "default", "queue name")
 	typ := fs.String("type", "echo", "workflow type")
@@ -188,7 +207,7 @@ func enqueue(ctx context.Context, args []string) error {
 		IdempotencyKey: *key,
 		MaxAttempts:    *maxAttempts,
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -208,7 +227,7 @@ func enqueue(ctx context.Context, args []string) error {
 	return nil
 }
 
-func listJobs(ctx context.Context, args []string) error {
+func listJobs(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "limit")
 	queue := fs.String("queue", "", "filter by queue")
@@ -218,7 +237,7 @@ func listJobs(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -238,7 +257,7 @@ func listJobs(ctx context.Context, args []string) error {
 	return printJobsTable(jobs)
 }
 
-func inspectJob(ctx context.Context, args []string) error {
+func inspectJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -247,7 +266,7 @@ func inspectJob(ctx context.Context, args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: workrail inspect <job-id>")
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -262,11 +281,11 @@ func inspectJob(ctx context.Context, args []string) error {
 	return printJSON(map[string]any{"job": job, "events": events})
 }
 
-func cancelJob(ctx context.Context, args []string) error {
+func cancelJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: workrail cancel <job-id>")
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -274,11 +293,11 @@ func cancelJob(ctx context.Context, args []string) error {
 	return store.Cancel(ctx, args[0])
 }
 
-func replayJob(ctx context.Context, args []string) error {
+func replayJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: workrail replay <job-id>")
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -290,21 +309,21 @@ func replayJob(ctx context.Context, args []string) error {
 	return printJSON(job)
 }
 
-func dlq(ctx context.Context, args []string) error {
+func dlq(ctx context.Context, cfg appconfig.Config, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: workrail dlq <list|retry>")
 	}
 	switch args[0] {
 	case "list":
-		return listDeadLetters(ctx, args[1:])
+		return listDeadLetters(ctx, cfg, args[1:])
 	case "retry":
-		return retryDeadLetter(ctx, args[1:])
+		return retryDeadLetter(ctx, cfg, args[1:])
 	default:
 		return fmt.Errorf("unknown dlq command %q", args[0])
 	}
 }
 
-func listDeadLetters(ctx context.Context, args []string) error {
+func listDeadLetters(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("dlq list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "limit")
 	queue := fs.String("queue", "", "filter by queue")
@@ -313,7 +332,7 @@ func listDeadLetters(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -333,7 +352,7 @@ func listDeadLetters(ctx context.Context, args []string) error {
 	return printJobsTable(jobs)
 }
 
-func retryDeadLetter(ctx context.Context, args []string) error {
+func retryDeadLetter(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("dlq retry", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -342,7 +361,7 @@ func retryDeadLetter(ctx context.Context, args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: workrail dlq retry <job-id>")
 	}
-	store, err := postgres.New(ctx, databaseURL())
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -435,62 +454,18 @@ func compactJSON(data []byte) string {
 	return buf.String()
 }
 
-func databaseURL() string {
-	return env("DATABASE_URL", defaultDatabaseURL)
-}
-
-func env(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func envAllowEmpty(key, fallback string) string {
-	value, ok := os.LookupEnv(key)
-	if !ok {
-		return fallback
-	}
-	return value
-}
-
-func envAny(keys []string, fallback string) string {
-	for _, key := range keys {
-		if value := os.Getenv(key); value != "" {
-			return value
-		}
-	}
-	return fallback
-}
-
-func envDuration(key string, fallback time.Duration) time.Duration {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
+func parseDuration(value string, fallback time.Duration) time.Duration {
 	duration, err := time.ParseDuration(value)
 	if err != nil {
-		slog.Warn("invalid duration environment value", "key", key, "value", value, "error", err)
+		slog.Warn("invalid duration config value", "value", value, "error", err)
 		return fallback
 	}
 	return duration
 }
 
-func envInt(key string, fallback int) int {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(value)
-	if err != nil {
-		slog.Warn("invalid integer environment value", "key", key, "value", value, "error", err)
-		return fallback
-	}
-	return n
-}
-
 func usage() {
 	fmt.Fprintln(os.Stderr, `workrail commands:
+  --config workrail.yaml <command>
   api
   worker
   migrate [--file migrations/001_init.sql]

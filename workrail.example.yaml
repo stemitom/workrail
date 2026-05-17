@@ -1,0 +1,12 @@
+database_url: postgres://durable:durable@localhost:5432/durable?sslmode=disable
+
+api:
+  addr: :8080
+
+worker:
+  id: worker-1
+  queue: default
+  concurrency: 4
+  shutdown_timeout: 30s
+  metrics_addr: :9090
+
