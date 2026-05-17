@@ -12,17 +12,17 @@ import (
 
 var (
 	JobsEnqueued = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "dwf_jobs_enqueued_total",
+		Name: "workrail_jobs_enqueued_total",
 		Help: "Total jobs enqueued.",
 	}, []string{"workflow_type"})
 
 	HTTPRequests = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "dwf_http_requests_total",
+		Name: "workrail_http_requests_total",
 		Help: "Total HTTP requests.",
 	}, []string{"method", "path", "status"})
 
 	HTTPRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "dwf_http_request_duration_seconds",
+		Name:    "workrail_http_request_duration_seconds",
 		Help:    "HTTP request latency.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path"})

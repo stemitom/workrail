@@ -20,7 +20,7 @@ services:
     command: ["api"]
     environment:
       DATABASE_URL: postgres://durable:durable@postgres:5432/durable?sslmode=disable
-      DWF_API_ADDR: :8080
+      WORKRAIL_API_ADDR: :8080
     ports:
       - "8080:8080"
     depends_on:
@@ -32,8 +32,7 @@ services:
     command: ["worker"]
     environment:
       DATABASE_URL: postgres://durable:durable@postgres:5432/durable?sslmode=disable
-      DWF_WORKER_ID: compose-worker-1
+      WORKRAIL_WORKER_ID: compose-worker-1
     depends_on:
       postgres:
         condition: service_healthy
-

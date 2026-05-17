@@ -91,7 +91,7 @@ func runAPI(ctx context.Context) error {
 	}
 	defer store.Close()
 
-	addr := env("DWF_API_ADDR", ":8080")
+	addr := envAny([]string{"WORKRAIL_API_ADDR", "DWF_API_ADDR"}, ":8080")
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           api.New(store, slog.Default()).Handler(),
@@ -118,7 +118,7 @@ func runWorker(ctx context.Context) error {
 	}
 	defer store.Close()
 	hostname, _ := os.Hostname()
-	workerID := env("DWF_WORKER_ID", hostname)
+	workerID := envAny([]string{"WORKRAIL_WORKER_ID", "DWF_WORKER_ID"}, hostname)
 	if workerID == "" {
 		workerID = "worker"
 	}
@@ -181,7 +181,7 @@ func listJobs(ctx context.Context, args []string) error {
 
 func inspectJob(ctx context.Context, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: dwf inspect <job-id>")
+		return fmt.Errorf("usage: workrail inspect <job-id>")
 	}
 	store, err := postgres.New(ctx, databaseURL())
 	if err != nil {
@@ -197,7 +197,7 @@ func inspectJob(ctx context.Context, args []string) error {
 
 func cancelJob(ctx context.Context, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: dwf cancel <job-id>")
+		return fmt.Errorf("usage: workrail cancel <job-id>")
 	}
 	store, err := postgres.New(ctx, databaseURL())
 	if err != nil {
@@ -209,7 +209,7 @@ func cancelJob(ctx context.Context, args []string) error {
 
 func replayJob(ctx context.Context, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: dwf replay <job-id>")
+		return fmt.Errorf("usage: workrail replay <job-id>")
 	}
 	store, err := postgres.New(ctx, databaseURL())
 	if err != nil {
@@ -240,8 +240,17 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+func envAny(keys []string, fallback string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `dwf commands:
+	fmt.Fprintln(os.Stderr, `workrail commands:
   api
   worker
   migrate [--file migrations/001_init.sql]

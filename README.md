@@ -11,24 +11,25 @@ docker compose up --build
 The API listens on `http://localhost:8080`.
 
 ```bash
-go run ./cmd/dwf migrate
-go run ./cmd/dwf enqueue --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
-go run ./cmd/dwf list
-go run ./cmd/dwf inspect <job-id>
-go run ./cmd/dwf cancel <job-id>
-go run ./cmd/dwf replay <job-id>
+go run ./cmd/workrail migrate
+go run ./cmd/workrail enqueue --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
+go run ./cmd/workrail list
+go run ./cmd/workrail inspect <job-id>
+go run ./cmd/workrail cancel <job-id>
+go run ./cmd/workrail replay <job-id>
 ```
 
 Run the Postgres-backed integration tests against a local database:
 
 ```bash
-go run ./cmd/dwf migrate
+go run ./cmd/workrail migrate
 make integration-test
 ```
 
 ## Architecture
 
-- `cmd/dwf`: single binary with `api`, `worker`, and CLI commands.
+- `cmd/workrail`: single binary with `api`, `worker`, and CLI commands.
+- `workrail.go`: public Go SDK for embedding clients and workers.
 - `internal/engine`: job model, state machine, workflow registry, worker runtime.
 - `internal/store/postgres`: durable SQL implementation using row locks and leases.
 - `internal/observability`: OpenTelemetry and Prometheus setup.
@@ -61,8 +62,35 @@ steps:
       seconds: 2
 ```
 
+## Go SDK
+
+Applications can embed a worker and register workflows directly:
+
+```go
+client, err := workrail.Open(ctx, workrail.Options{
+    DatabaseURL: os.Getenv("DATABASE_URL"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+client.Register("send_email", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+    return json.RawMessage(`{"sent":true}`), nil
+})
+
+go client.RunWorker(ctx, workrail.WorkerOptions{
+    ID:          "emails-1",
+    Concurrency: 8,
+})
+
+job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
+    "user_id": "user_123",
+}, workrail.WithIdempotencyKey("welcome-email-user_123"))
+```
+
 ## Environment
 
 - `DATABASE_URL`: PostgreSQL connection string. Defaults to `postgres://durable:durable@localhost:5432/durable?sslmode=disable`.
-- `DWF_API_ADDR`: API listen address. Defaults to `:8080`.
-- `DWF_WORKER_ID`: worker identity. Defaults to hostname.
+- `WORKRAIL_API_ADDR`: API listen address. Defaults to `:8080`.
+- `WORKRAIL_WORKER_ID`: worker identity. Defaults to hostname.
