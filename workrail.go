@@ -39,10 +39,11 @@ type Options struct {
 }
 
 type WorkerOptions struct {
-	ID            string
-	PollInterval  time.Duration
-	LeaseDuration time.Duration
-	Concurrency   int
+	ID              string
+	PollInterval    time.Duration
+	LeaseDuration   time.Duration
+	ShutdownTimeout time.Duration
+	Concurrency     int
 }
 
 type Client struct {
@@ -133,13 +134,14 @@ func (c *Client) RunWorker(ctx context.Context, opts WorkerOptions) error {
 		workerID = "worker"
 	}
 	return (&engine.Worker{
-		ID:            workerID,
-		Store:         c.store,
-		Registry:      c.registry,
-		PollInterval:  opts.PollInterval,
-		LeaseDuration: opts.LeaseDuration,
-		Concurrency:   opts.Concurrency,
-		Logger:        c.logger,
+		ID:              workerID,
+		Store:           c.store,
+		Registry:        c.registry,
+		PollInterval:    opts.PollInterval,
+		LeaseDuration:   opts.LeaseDuration,
+		ShutdownTimeout: opts.ShutdownTimeout,
+		Concurrency:     opts.Concurrency,
+		Logger:          c.logger,
 	}).Run(ctx)
 }
 

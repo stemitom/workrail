@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -127,13 +128,14 @@ func runWorker(ctx context.Context) error {
 		workerID = "worker"
 	}
 	w := &engine.Worker{
-		ID:            workerID,
-		Store:         store,
-		Registry:      engine.NewRegistry(),
-		PollInterval:  time.Second,
-		LeaseDuration: 30 * time.Second,
-		Concurrency:   4,
-		Logger:        slog.Default(),
+		ID:              workerID,
+		Store:           store,
+		Registry:        engine.NewRegistry(),
+		PollInterval:    time.Second,
+		LeaseDuration:   30 * time.Second,
+		ShutdownTimeout: envDuration("WORKRAIL_SHUTDOWN_TIMEOUT", 30*time.Second),
+		Concurrency:     envInt("WORKRAIL_WORKER_CONCURRENCY", 4),
+		Logger:          slog.Default(),
 	}
 	return w.Run(ctx)
 }
@@ -413,6 +415,32 @@ func envAny(keys []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		slog.Warn("invalid duration environment value", "key", key, "value", value, "error", err)
+		return fallback
+	}
+	return duration
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		slog.Warn("invalid integer environment value", "key", key, "value", value, "error", err)
+		return fallback
+	}
+	return n
 }
 
 func usage() {

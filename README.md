@@ -51,6 +51,8 @@ queued -> running -> succeeded
 
 Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path.
 
+Workers stop claiming new jobs when their process context is canceled. In-flight jobs are allowed to drain for `WORKRAIL_SHUTDOWN_TIMEOUT`; if that timeout elapses, Workrail cancels the in-flight workflow contexts so jobs can fail or be reclaimed by lease expiry. Workflow panics are recovered and recorded as job failures, so a single bad workflow does not crash the worker process.
+
 ## Operations
 
 List recent jobs:
@@ -124,3 +126,5 @@ job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
 - `DATABASE_URL`: PostgreSQL connection string. Defaults to `postgres://durable:durable@localhost:5432/durable?sslmode=disable`.
 - `WORKRAIL_API_ADDR`: API listen address. Defaults to `:8080`.
 - `WORKRAIL_WORKER_ID`: worker identity. Defaults to hostname.
+- `WORKRAIL_WORKER_CONCURRENCY`: number of jobs a worker runs concurrently. Defaults to `4`.
+- `WORKRAIL_SHUTDOWN_TIMEOUT`: graceful worker drain timeout. Defaults to `30s`.
