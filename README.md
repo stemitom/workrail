@@ -12,8 +12,9 @@ The API listens on `http://localhost:8080`.
 
 ```bash
 go run ./cmd/workrail migrate
-go run ./cmd/workrail enqueue --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
+go run ./cmd/workrail enqueue --queue default --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
 go run ./cmd/workrail list
+go run ./cmd/workrail list --queue default
 go run ./cmd/workrail list --status dead_letter
 go run ./cmd/workrail inspect <job-id>
 go run ./cmd/workrail dlq list
@@ -59,6 +60,7 @@ List recent jobs:
 
 ```bash
 go run ./cmd/workrail list --limit 50
+go run ./cmd/workrail list --queue emails
 go run ./cmd/workrail list --status queued
 go run ./cmd/workrail list --type send_email
 ```
@@ -77,6 +79,16 @@ go run ./cmd/workrail dlq retry <job-id>
 ```
 
 Retrying a dead-lettered job moves it back to `queued`, clears the last error, and resets the attempt counter.
+
+Named queues let different worker pools own different classes of work:
+
+```bash
+go run ./cmd/workrail enqueue --queue emails --type send_email --payload '{"user_id":"user_123"}'
+WORKRAIL_QUEUE=emails go run ./cmd/workrail worker
+WORKRAIL_QUEUE=billing go run ./cmd/workrail worker
+```
+
+Workers only claim jobs from their configured queue. Jobs default to the `default` queue when no queue is provided.
 
 ## Workflow Definitions
 
@@ -113,18 +125,20 @@ client.Register("send_email", func(ctx context.Context, payload json.RawMessage)
 
 go client.RunWorker(ctx, workrail.WorkerOptions{
     ID:          "emails-1",
+    Queue:       "emails",
     Concurrency: 8,
 })
 
 job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
     "user_id": "user_123",
-}, workrail.WithIdempotencyKey("welcome-email-user_123"))
+}, workrail.WithQueue("emails"), workrail.WithIdempotencyKey("welcome-email-user_123"))
 ```
 
 ## Environment
 
 - `DATABASE_URL`: PostgreSQL connection string. Defaults to `postgres://durable:durable@localhost:5432/durable?sslmode=disable`.
 - `WORKRAIL_API_ADDR`: API listen address. Defaults to `:8080`.
+- `WORKRAIL_QUEUE`: worker queue subscription. Defaults to `default`.
 - `WORKRAIL_WORKER_ID`: worker identity. Defaults to hostname.
 - `WORKRAIL_WORKER_CONCURRENCY`: number of jobs a worker runs concurrently. Defaults to `4`.
 - `WORKRAIL_SHUTDOWN_TIMEOUT`: graceful worker drain timeout. Defaults to `30s`.

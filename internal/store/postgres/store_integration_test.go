@@ -110,6 +110,51 @@ func TestIntegrationClaimCompleteLifecycle(t *testing.T) {
 	}
 }
 
+func TestIntegrationClaimRespectsQueue(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	emailJob, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		Queue:        "emails",
+		WorkflowType: "echo",
+		Payload:      []byte(`{"queue":"emails"}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue emails: %v", err)
+	}
+	billingJob, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		Queue:        "billing",
+		WorkflowType: "echo",
+		Payload:      []byte(`{"queue":"billing"}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue billing: %v", err)
+	}
+
+	claimed, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-emails",
+		Queue:         "emails",
+		LeaseDuration: time.Minute,
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("claim emails: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != emailJob.ID {
+		t.Fatalf("claimed = %+v, want only %s", claimed, emailJob.ID)
+	}
+	if claimed[0].Queue != "emails" {
+		t.Fatalf("claimed queue = %s, want emails", claimed[0].Queue)
+	}
+
+	billingJobs, err := store.List(ctx, engine.ListOptions{Queue: "billing"})
+	if err != nil {
+		t.Fatalf("list billing: %v", err)
+	}
+	if len(billingJobs) != 1 || billingJobs[0].ID != billingJob.ID {
+		t.Fatalf("billing list = %+v, want %s", billingJobs, billingJob.ID)
+	}
+}
+
 func TestIntegrationRetryThenDeadLetter(t *testing.T) {
 	store, ctx := integrationStore(t)
 

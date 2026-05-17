@@ -42,6 +42,13 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
+func TestNormalizeEnqueueDefaultsQueue(t *testing.T) {
+	req := NormalizeEnqueue(EnqueueRequest{WorkflowType: "echo"})
+	if req.Queue != "default" {
+		t.Fatalf("queue = %q, want default", req.Queue)
+	}
+}
+
 func TestIsValidStatus(t *testing.T) {
 	if !IsValidStatus(StatusQueued) {
 		t.Fatal("queued should be valid")

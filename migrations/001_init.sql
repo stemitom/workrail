@@ -8,6 +8,7 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS jobs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  queue text NOT NULL DEFAULT 'default',
   workflow_type text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status job_status NOT NULL DEFAULT 'queued',
@@ -26,6 +27,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   completed_at timestamptz
 );
 
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS queue text NOT NULL DEFAULT 'default';
+
 CREATE TABLE IF NOT EXISTS job_events (
   id bigserial PRIMARY KEY,
   job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -38,9 +41,16 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claimable
   ON jobs (run_after, created_at)
   WHERE status IN ('queued', 'retrying');
 
+CREATE INDEX IF NOT EXISTS idx_jobs_claimable_queue
+  ON jobs (queue, run_after, created_at)
+  WHERE status IN ('queued', 'retrying');
+
 CREATE INDEX IF NOT EXISTS idx_jobs_lease_expired
   ON jobs (lease_expires_at)
   WHERE status = 'running';
 
-CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events (job_id, id);
+CREATE INDEX IF NOT EXISTS idx_jobs_lease_expired_queue
+  ON jobs (queue, lease_expires_at)
+  WHERE status = 'running';
 
+CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events (job_id, id);

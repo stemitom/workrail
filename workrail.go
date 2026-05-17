@@ -40,6 +40,7 @@ type Options struct {
 
 type WorkerOptions struct {
 	ID              string
+	Queue           string
 	PollInterval    time.Duration
 	LeaseDuration   time.Duration
 	ShutdownTimeout time.Duration
@@ -93,7 +94,7 @@ func (c *Client) EnqueueJSON(ctx context.Context, workflowType string, payload a
 	if err != nil {
 		return Job{}, false, err
 	}
-	req := EnqueueRequest{WorkflowType: workflowType, Payload: data}
+	req := EnqueueRequest{Queue: "default", WorkflowType: workflowType, Payload: data}
 	for _, opt := range opts {
 		opt(&req)
 	}
@@ -135,6 +136,7 @@ func (c *Client) RunWorker(ctx context.Context, opts WorkerOptions) error {
 	}
 	return (&engine.Worker{
 		ID:              workerID,
+		Queue:           opts.Queue,
 		Store:           c.store,
 		Registry:        c.registry,
 		PollInterval:    opts.PollInterval,
@@ -162,5 +164,11 @@ func WithMaxAttempts(maxAttempts int) EnqueueOption {
 func WithRunAfter(runAfter time.Time) EnqueueOption {
 	return func(req *EnqueueRequest) {
 		req.RunAfter = runAfter
+	}
+}
+
+func WithQueue(queue string) EnqueueOption {
+	return func(req *EnqueueRequest) {
+		req.Queue = queue
 	}
 }

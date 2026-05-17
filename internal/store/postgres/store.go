@@ -38,13 +38,13 @@ func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.
 	req = engine.NormalizeEnqueue(req)
 	var job engine.Job
 	rows, err := s.db.Query(ctx, `
-		INSERT INTO jobs (workflow_type, payload, idempotency_key, max_attempts, run_after)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5)
+		INSERT INTO jobs (queue, workflow_type, payload, idempotency_key, max_attempts, run_after)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
 		ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = jobs.updated_at
-		RETURNING id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at,
 			(xmax = 0) AS inserted
-	`, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter)
+	`, req.Queue, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter)
 	if err != nil {
 		return job, false, err
 	}
@@ -62,21 +62,24 @@ func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.
 	if !inserted {
 		event = "job.enqueue_idempotent_hit"
 	}
-	return job, inserted, s.appendEvent(ctx, job.ID, event, map[string]any{"workflow_type": req.WorkflowType})
+	return job, inserted, s.appendEvent(ctx, job.ID, event, map[string]any{"queue": req.Queue, "workflow_type": req.WorkflowType})
 }
 
 func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.Job, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 1
 	}
+	if opts.Queue == "" {
+		opts.Queue = "default"
+	}
 	rows, err := s.db.Query(ctx, `
 		WITH claimable AS (
 			SELECT id
 			FROM jobs
 			WHERE (
-				status IN ('queued', 'retrying') AND run_after <= now()
+				queue = $4 AND status IN ('queued', 'retrying') AND run_after <= now()
 			) OR (
-				status = 'running' AND lease_expires_at < now()
+				queue = $4 AND status = 'running' AND lease_expires_at < now()
 			)
 			ORDER BY run_after, created_at
 			FOR UPDATE SKIP LOCKED
@@ -92,9 +95,9 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 			error = NULL
 		FROM claimable
 		WHERE j.id = claimable.id
-		RETURNING j.id, j.workflow_type, j.payload, j.status, j.idempotency_key, j.attempt, j.max_attempts, j.run_after,
+		RETURNING j.id, j.queue, j.workflow_type, j.payload, j.status, j.idempotency_key, j.attempt, j.max_attempts, j.run_after,
 			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.created_at, j.updated_at, j.completed_at
-	`, opts.Limit, opts.WorkerID, pgInterval(opts.LeaseDuration))
+	`, opts.Limit, opts.WorkerID, pgInterval(opts.LeaseDuration), opts.Queue)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +214,7 @@ func (s *Store) RetryDeadLetter(ctx context.Context, jobID string) (engine.Job, 
 		SET status = 'queued', attempt = 0, run_after = now(), lease_owner = NULL, lease_expires_at = NULL,
 			heartbeat_at = NULL, error = NULL, updated_at = now(), completed_at = NULL
 		WHERE id = $1 AND status = 'dead_letter'
-		RETURNING id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
@@ -226,9 +229,9 @@ func (s *Store) RetryDeadLetter(ctx context.Context, jobID string) (engine.Job, 
 func (s *Store) Replay(ctx context.Context, jobID string) (engine.Job, error) {
 	var job engine.Job
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO jobs (workflow_type, payload, max_attempts)
-		SELECT workflow_type, payload, max_attempts FROM jobs WHERE id = $1
-		RETURNING id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+		INSERT INTO jobs (queue, workflow_type, payload, max_attempts)
+		SELECT queue, workflow_type, payload, max_attempts FROM jobs WHERE id = $1
+		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
@@ -243,7 +246,7 @@ func (s *Store) Replay(ctx context.Context, jobID string) (engine.Job, error) {
 func (s *Store) Get(ctx context.Context, jobID string) (engine.Job, []engine.Event, error) {
 	var job engine.Job
 	err := s.db.QueryRow(ctx, `
-		SELECT id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
 		FROM jobs WHERE id = $1
 	`, jobID).Scan(jobScanTargets(&job)...)
@@ -265,14 +268,15 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 		return nil, engine.ErrInvalidStatus
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
+		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
 		FROM jobs
-		WHERE ($2 = '' OR status = $2::job_status)
-			AND ($3 = '' OR workflow_type = $3)
+		WHERE ($2 = '' OR queue = $2)
+			AND ($3 = '' OR status = $3::job_status)
+			AND ($4 = '' OR workflow_type = $4)
 		ORDER BY created_at DESC
 		LIMIT $1
-	`, opts.Limit, string(opts.Status), opts.WorkflowType)
+	`, opts.Limit, opts.Queue, string(opts.Status), opts.WorkflowType)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +342,7 @@ func scanJobWithInserted(rows pgx.Rows, job *engine.Job, inserted *bool) error {
 
 func jobScanTargets(job *engine.Job) []any {
 	return []any{
-		&job.ID, &job.WorkflowType, &job.Payload, &job.Status, &job.IdempotencyKey, &job.Attempt, &job.MaxAttempts,
+		&job.ID, &job.Queue, &job.WorkflowType, &job.Payload, &job.Status, &job.IdempotencyKey, &job.Attempt, &job.MaxAttempts,
 		&job.RunAfter, &job.LeaseOwner, &job.LeaseExpiresAt, &job.HeartbeatAt, &job.Result, &job.Error,
 		&job.TraceID, &job.CreatedAt, &job.UpdatedAt, &job.CompletedAt,
 	}

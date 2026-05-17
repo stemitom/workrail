@@ -33,6 +33,7 @@ services:
     environment:
       DATABASE_URL: postgres://durable:durable@postgres:5432/durable?sslmode=disable
       WORKRAIL_WORKER_ID: compose-worker-1
+      WORKRAIL_QUEUE: default
       WORKRAIL_WORKER_CONCURRENCY: 4
       WORKRAIL_SHUTDOWN_TIMEOUT: 30s
     depends_on:

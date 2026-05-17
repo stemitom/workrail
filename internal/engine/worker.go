@@ -13,6 +13,7 @@ import (
 
 type Worker struct {
 	ID              string
+	Queue           string
 	Store           Store
 	Registry        *Registry
 	PollInterval    time.Duration
@@ -41,6 +42,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		jobs, err := w.Store.Claim(ctx, ClaimOptions{
 			WorkerID:      w.ID,
+			Queue:         w.Queue,
 			LeaseDuration: w.LeaseDuration,
 			Limit:         w.Concurrency,
 		})
@@ -149,6 +151,9 @@ func (w *Worker) applyDefaults() {
 	}
 	if w.Concurrency <= 0 {
 		w.Concurrency = 4
+	}
+	if w.Queue == "" {
+		w.Queue = "default"
 	}
 	if w.Logger == nil {
 		w.Logger = slog.Default()

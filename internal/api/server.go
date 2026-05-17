@@ -68,11 +68,12 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
 		Limit:        limit,
+		Queue:        r.URL.Query().Get("queue"),
 		Status:       engine.Status(r.URL.Query().Get("status")),
 		WorkflowType: r.URL.Query().Get("type"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
@@ -82,11 +83,12 @@ func (s *Server) deadLetters(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
 		Limit:        limit,
+		Queue:        r.URL.Query().Get("queue"),
 		Status:       engine.StatusDeadLetter,
 		WorkflowType: r.URL.Query().Get("type"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)

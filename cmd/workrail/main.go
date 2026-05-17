@@ -129,6 +129,7 @@ func runWorker(ctx context.Context) error {
 	}
 	w := &engine.Worker{
 		ID:              workerID,
+		Queue:           env("WORKRAIL_QUEUE", "default"),
 		Store:           store,
 		Registry:        engine.NewRegistry(),
 		PollInterval:    time.Second,
@@ -142,6 +143,7 @@ func runWorker(ctx context.Context) error {
 
 func enqueue(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("enqueue", flag.ExitOnError)
+	queue := fs.String("queue", "default", "queue name")
 	typ := fs.String("type", "echo", "workflow type")
 	payload := fs.String("payload", "{}", "JSON or YAML payload")
 	key := fs.String("idempotency-key", "", "idempotency key")
@@ -151,6 +153,7 @@ func enqueue(ctx context.Context, args []string) error {
 		return err
 	}
 	req := engine.EnqueueRequest{
+		Queue:          *queue,
 		WorkflowType:   *typ,
 		Payload:        json.RawMessage(*payload),
 		IdempotencyKey: *key,
@@ -172,13 +175,14 @@ func enqueue(ctx context.Context, args []string) error {
 	if !inserted {
 		verb = "exists"
 	}
-	fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n", verb, job.ID, job.Status)
+	fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\n", verb, job.ID, job.Queue, job.Status)
 	return nil
 }
 
 func listJobs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "limit")
+	queue := fs.String("queue", "", "filter by queue")
 	status := fs.String("status", "", "filter by status")
 	typ := fs.String("type", "", "filter by workflow type")
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -192,6 +196,7 @@ func listJobs(ctx context.Context, args []string) error {
 	defer store.Close()
 	jobs, err := store.List(ctx, engine.ListOptions{
 		Limit:        *limit,
+		Queue:        *queue,
 		Status:       engine.Status(*status),
 		WorkflowType: *typ,
 	})
@@ -273,6 +278,7 @@ func dlq(ctx context.Context, args []string) error {
 func listDeadLetters(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("dlq list", flag.ExitOnError)
 	limit := fs.Int("limit", 20, "limit")
+	queue := fs.String("queue", "", "filter by queue")
 	typ := fs.String("type", "", "filter by workflow type")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -285,6 +291,7 @@ func listDeadLetters(ctx context.Context, args []string) error {
 	defer store.Close()
 	jobs, err := store.List(ctx, engine.ListOptions{
 		Limit:        *limit,
+		Queue:        *queue,
 		Status:       engine.StatusDeadLetter,
 		WorkflowType: *typ,
 	})
@@ -330,10 +337,11 @@ func printJSON(value any) error {
 
 func printJobsTable(jobs []engine.Job) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTYPE\tSTATUS\tATTEMPT\tMAX\tRUN_AFTER\tUPDATED")
+	fmt.Fprintln(w, "ID\tQUEUE\tTYPE\tSTATUS\tATTEMPT\tMAX\tRUN_AFTER\tUPDATED")
 	for _, job := range jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
 			shortID(job.ID),
+			job.Queue,
 			job.WorkflowType,
 			job.Status,
 			job.Attempt,
@@ -347,6 +355,7 @@ func printJobsTable(jobs []engine.Job) error {
 
 func printJobDetails(job engine.Job, events []engine.Event) error {
 	fmt.Fprintf(os.Stdout, "id: %s\n", job.ID)
+	fmt.Fprintf(os.Stdout, "queue: %s\n", job.Queue)
 	fmt.Fprintf(os.Stdout, "type: %s\n", job.WorkflowType)
 	fmt.Fprintf(os.Stdout, "status: %s\n", job.Status)
 	fmt.Fprintf(os.Stdout, "attempt: %d/%d\n", job.Attempt, job.MaxAttempts)
@@ -448,11 +457,11 @@ func usage() {
   api
   worker
   migrate [--file migrations/001_init.sql]
-  enqueue --type echo --payload '{"message":"hi"}' [--idempotency-key key]
-  list [--limit 20] [--status queued] [--type echo] [--json]
+  enqueue --queue default --type echo --payload '{"message":"hi"}' [--idempotency-key key]
+  list [--limit 20] [--queue default] [--status queued] [--type echo] [--json]
   inspect [--json] <job-id>
   replay <job-id>
   cancel <job-id>
-  dlq list [--limit 20] [--type echo] [--json]
+  dlq list [--limit 20] [--queue default] [--type echo] [--json]
   dlq retry [--json] <job-id>`)
 }

@@ -20,6 +20,7 @@ const (
 
 type Job struct {
 	ID             string          `json:"id"`
+	Queue          string          `json:"queue"`
 	WorkflowType   string          `json:"workflow_type"`
 	Payload        json.RawMessage `json:"payload"`
 	Status         Status          `json:"status"`
@@ -47,6 +48,7 @@ type Event struct {
 }
 
 type EnqueueRequest struct {
+	Queue          string          `json:"queue"`
 	WorkflowType   string          `json:"workflow_type"`
 	Payload        json.RawMessage `json:"payload"`
 	IdempotencyKey string          `json:"idempotency_key"`
@@ -56,12 +58,14 @@ type EnqueueRequest struct {
 
 type ClaimOptions struct {
 	WorkerID      string
+	Queue         string
 	LeaseDuration time.Duration
 	Limit         int
 }
 
 type ListOptions struct {
 	Limit        int
+	Queue        string
 	Status       Status
 	WorkflowType string
 }
@@ -74,6 +78,9 @@ var (
 )
 
 func NormalizeEnqueue(req EnqueueRequest) EnqueueRequest {
+	if req.Queue == "" {
+		req.Queue = "default"
+	}
 	if len(req.Payload) == 0 {
 		req.Payload = json.RawMessage(`{}`)
 	}
