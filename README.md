@@ -114,6 +114,23 @@ Key metrics include:
 - `workrail_worker_configured_concurrency{worker_id,queue}`
 - `workrail_queue_depth{queue,status}`
 
+## Tracing
+
+Workrail can export OpenTelemetry traces over OTLP/gRPC:
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: localhost:4317
+  insecure: true
+```
+
+Environment overrides are also available:
+
+- `WORKRAIL_TRACING_ENABLED`: set to `true` or `1` to enable OTLP export.
+- `WORKRAIL_OTLP_ENDPOINT`: OTLP/gRPC endpoint, for example `localhost:4317`. Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_ENDPOINT` are also honored.
+- `WORKRAIL_OTLP_INSECURE`: set to `true` or `1` for plaintext local collectors.
+
 ## Workflow Definitions
 
 Built-in Go workflows live in `internal/engine/workflows.go`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:

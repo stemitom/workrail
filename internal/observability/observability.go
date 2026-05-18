@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -11,6 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -71,6 +79,13 @@ type QueueDepth struct {
 	Count  int64  `json:"count"`
 }
 
+type TracingConfig struct {
+	ServiceName string
+	Enabled     bool
+	Endpoint    string
+	Insecure    bool
+}
+
 var queueDepthCollectors sync.Map
 
 func RegisterQueueDepthCollector(reader QueueDepthReader) {
@@ -97,9 +112,60 @@ func RegisterQueueDepthCollector(reader QueueDepthReader) {
 	}
 }
 
-func Init(service string) {
+func Init(ctx context.Context, cfg TracingConfig) (func(context.Context) error, error) {
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) {}))
-	_ = service
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+	if !cfg.Enabled || cfg.Endpoint == "" {
+		return func(context.Context) error { return nil }, nil
+	}
+	endpoint, insecureTransport := normalizeOTLPEndpoint(cfg.Endpoint, cfg.Insecure)
+
+	opts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(endpoint),
+	}
+	if insecureTransport {
+		opts = append(opts, otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()))
+	} else {
+		opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewClientTLSFromCert(nil, "")))
+	}
+	exporter, err := otlptracegrpc.New(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(cfg.ServiceName),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(provider)
+	return provider.Shutdown, nil
+}
+
+func normalizeOTLPEndpoint(endpoint string, insecureTransport bool) (string, bool) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return endpoint, insecureTransport
+	}
+	switch parsed.Scheme {
+	case "http":
+		return parsed.Host, true
+	case "https":
+		return parsed.Host, false
+	default:
+		return endpoint, insecureTransport
+	}
 }
 
 func HTTPMetrics(next http.Handler) http.Handler {

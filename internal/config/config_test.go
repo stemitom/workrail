@@ -42,6 +42,10 @@ worker:
   concurrency: 7
   shutdown_timeout: 45s
   metrics_addr: :9091
+tracing:
+  enabled: true
+  endpoint: collector:4317
+  insecure: false
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -64,5 +68,14 @@ worker:
 	}
 	if cfg.Worker.MetricsAddr != "" {
 		t.Fatalf("metrics addr = %q, want empty env override", cfg.Worker.MetricsAddr)
+	}
+	if !cfg.Tracing.Enabled {
+		t.Fatal("tracing enabled = false, want true")
+	}
+	if cfg.Tracing.Endpoint != "collector:4317" {
+		t.Fatalf("tracing endpoint = %q, want collector:4317", cfg.Tracing.Endpoint)
+	}
+	if cfg.Tracing.Insecure {
+		t.Fatal("tracing insecure = true, want false")
 	}
 }

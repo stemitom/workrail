@@ -11,9 +11,10 @@ import (
 const DefaultDatabaseURL = "postgres://durable:durable@localhost:5432/durable?sslmode=disable"
 
 type Config struct {
-	DatabaseURL string       `yaml:"database_url"`
-	API         APIConfig    `yaml:"api"`
-	Worker      WorkerConfig `yaml:"worker"`
+	DatabaseURL string        `yaml:"database_url"`
+	API         APIConfig     `yaml:"api"`
+	Worker      WorkerConfig  `yaml:"worker"`
+	Tracing     TracingConfig `yaml:"tracing"`
 }
 
 type APIConfig struct {
@@ -28,6 +29,12 @@ type WorkerConfig struct {
 	MetricsAddr     string `yaml:"metrics_addr"`
 }
 
+type TracingConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"`
+	Insecure bool   `yaml:"insecure"`
+}
+
 func Default() Config {
 	return Config{
 		DatabaseURL: DefaultDatabaseURL,
@@ -39,6 +46,10 @@ func Default() Config {
 			Concurrency:     4,
 			ShutdownTimeout: "30s",
 			MetricsAddr:     ":9090",
+		},
+		Tracing: TracingConfig{
+			Enabled:  false,
+			Insecure: true,
 		},
 	}
 }
@@ -88,6 +99,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Worker.MetricsAddr == "" {
 		cfg.Worker.MetricsAddr = defaults.Worker.MetricsAddr
 	}
+	if cfg.Tracing.Endpoint == "" {
+		cfg.Tracing.Endpoint = defaults.Tracing.Endpoint
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -113,6 +127,15 @@ func applyEnv(cfg *Config) {
 	}
 	if value, ok := os.LookupEnv("WORKRAIL_WORKER_METRICS_ADDR"); ok {
 		cfg.Worker.MetricsAddr = value
+	}
+	if value := os.Getenv("WORKRAIL_TRACING_ENABLED"); value != "" {
+		cfg.Tracing.Enabled = value == "true" || value == "1"
+	}
+	if value := firstEnv("WORKRAIL_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"); value != "" {
+		cfg.Tracing.Endpoint = value
+	}
+	if value := os.Getenv("WORKRAIL_OTLP_INSECURE"); value != "" {
+		cfg.Tracing.Insecure = value == "true" || value == "1"
 	}
 }
 

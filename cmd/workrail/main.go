@@ -137,7 +137,11 @@ func parseMigrateArgs(args []string) (string, string, error) {
 }
 
 func runAPI(ctx context.Context, cfg appconfig.Config) error {
-	observability.Init("workrail-api")
+	shutdownTracing, err := observability.Init(ctx, tracingConfig("workrail-api", cfg))
+	if err != nil {
+		return err
+	}
+	defer shutdownTracing(context.Background())
 	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -164,7 +168,11 @@ func runAPI(ctx context.Context, cfg appconfig.Config) error {
 }
 
 func runWorker(ctx context.Context, cfg appconfig.Config) error {
-	observability.Init("workrail-worker")
+	shutdownTracing, err := observability.Init(ctx, tracingConfig("workrail-worker", cfg))
+	if err != nil {
+		return err
+	}
+	defer shutdownTracing(context.Background())
 	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -218,6 +226,15 @@ func startMetricsServer(ctx context.Context, addr string) error {
 		}
 	}()
 	return nil
+}
+
+func tracingConfig(service string, cfg appconfig.Config) observability.TracingConfig {
+	return observability.TracingConfig{
+		ServiceName: service,
+		Enabled:     cfg.Tracing.Enabled,
+		Endpoint:    cfg.Tracing.Endpoint,
+		Insecure:    cfg.Tracing.Insecure,
+	}
 }
 
 func enqueue(ctx context.Context, cfg appconfig.Config, args []string) error {
