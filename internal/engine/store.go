@@ -6,6 +6,7 @@ import (
 )
 
 type Store interface {
+	StepStore
 	Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error)
 	Claim(ctx context.Context, opts ClaimOptions) ([]Job, error)
 	Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error

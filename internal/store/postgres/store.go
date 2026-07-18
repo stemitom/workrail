@@ -208,6 +208,36 @@ func (s *Store) PruneCompleted(ctx context.Context, queue string, olderThan time
 	return count, err
 }
 
+func (s *Store) GetStep(ctx context.Context, jobID, stepName string) (json.RawMessage, bool, error) {
+	var result json.RawMessage
+	err := s.db.QueryRow(ctx, `
+		SELECT result FROM job_steps WHERE job_id = $1 AND step_name = $2
+	`, jobID, stepName).Scan(&result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return result, true, nil
+}
+
+func (s *Store) SaveStep(ctx context.Context, jobID, stepName string, result json.RawMessage) error {
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO job_steps (job_id, step_name, result) VALUES ($1, $2, $3)
+			ON CONFLICT (job_id, step_name) DO NOTHING
+		`, jobID, stepName, result)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil
+		}
+		return appendEventTx(ctx, tx, jobID, "job.step_completed", map[string]any{"step": stepName})
+	})
+}
+
 func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error {
 	tag, err := s.db.Exec(ctx, `
 		UPDATE jobs

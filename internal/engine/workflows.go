@@ -77,7 +77,9 @@ func sequenceWorkflow(reg *Registry) WorkflowFunc {
 			if step.Name == "" {
 				step.Name = fmt.Sprintf("step_%d", i+1)
 			}
-			result, err := reg.Execute(ctx, step.Activity, step.Input)
+			result, err := RunStep(ctx, step.Name, func(ctx context.Context) (json.RawMessage, error) {
+				return reg.Execute(ctx, step.Activity, step.Input)
+			})
 			if err != nil {
 				return nil, fmt.Errorf("%s failed: %w", step.Name, err)
 			}

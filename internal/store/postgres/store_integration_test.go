@@ -393,6 +393,67 @@ func TestIntegrationCancelAndReplay(t *testing.T) {
 	}
 }
 
+func TestIntegrationStepCheckpoints(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "two-step",
+		Payload:      []byte(`{}`),
+		MaxAttempts:  1,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if _, found, err := store.GetStep(ctx, enqueued.ID, "charge"); err != nil || found {
+		t.Fatalf("get before save: found=%v err=%v, want absent", found, err)
+	}
+	if err := store.SaveStep(ctx, enqueued.ID, "charge", []byte(`{"amount":42}`)); err != nil {
+		t.Fatalf("save step: %v", err)
+	}
+	if err := store.SaveStep(ctx, enqueued.ID, "charge", []byte(`{"amount":99}`)); err != nil {
+		t.Fatalf("second save should be a no-op, got: %v", err)
+	}
+	result, found, err := store.GetStep(ctx, enqueued.ID, "charge")
+	if err != nil || !found {
+		t.Fatalf("get step: found=%v err=%v", found, err)
+	}
+	if string(result) != `{"amount": 42}` && string(result) != `{"amount":42}` {
+		t.Fatalf("step result = %s, want the first write to win", result)
+	}
+
+	if err := store.Fail(ctx, enqueued.ID, "worker-a", errors.New("boom")); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if _, err := store.RetryDeadLetter(ctx, enqueued.ID); err != nil {
+		t.Fatalf("dlq retry: %v", err)
+	}
+	if _, found, err := store.GetStep(ctx, enqueued.ID, "charge"); err != nil || !found {
+		t.Fatalf("step must survive dlq retry so the job resumes: found=%v err=%v", found, err)
+	}
+
+	_, events, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	stepEvents := 0
+	for _, event := range events {
+		if event.EventType == "job.step_completed" {
+			stepEvents++
+		}
+	}
+	if stepEvents != 1 {
+		t.Fatalf("job.step_completed events = %d, want 1 (conflict save must not re-log)", stepEvents)
+	}
+}
+
 func TestIntegrationPruneCompleted(t *testing.T) {
 	store, ctx := integrationStore(t)
 

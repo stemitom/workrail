@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,14 @@ func (s *fakeStore) Heartbeat(context.Context, string, string, time.Duration) er
 
 func (s *fakeStore) DeadLetterExhausted(context.Context) (int, error) {
 	return 0, nil
+}
+
+func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, bool, error) {
+	return nil, false, nil
+}
+
+func (s *fakeStore) SaveStep(context.Context, string, string, json.RawMessage) error {
+	return nil
 }
 
 func (s *fakeStore) PruneCompleted(context.Context, string, time.Duration) (int, error) {

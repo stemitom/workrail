@@ -31,13 +31,26 @@ func main() {
 	}
 	defer client.Close()
 
+	// Each Step checkpoints its result: if the workflow fails and retries, or
+	// the worker dies mid-run, completed steps are not executed again.
 	client.Register("greet", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
 		var p greetPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return nil, err
 		}
-		slog.Info("greeting", "name", p.Name)
-		return json.Marshal(map[string]string{"greeting": "hello " + p.Name})
+		greeting, err := workrail.Step(ctx, "compose", func(context.Context) (string, error) {
+			return "hello " + p.Name, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := workrail.Step(ctx, "deliver", func(context.Context) (bool, error) {
+			slog.Info("greeting", "message", greeting)
+			return true, nil
+		}); err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]string{"greeting": greeting})
 	})
 
 	job, inserted, err := client.EnqueueJSON(ctx, "greet", greetPayload{Name: "workrail"},

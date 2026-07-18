@@ -69,6 +69,27 @@ Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit he
 
 Workers stop claiming new jobs when their process context is canceled. In-flight jobs are allowed to drain for `WORKRAIL_SHUTDOWN_TIMEOUT`; if that timeout elapses, Workrail cancels the in-flight workflow contexts so jobs can fail or be reclaimed by lease expiry. Workflow panics are recovered and recorded as job failures, so a single bad workflow does not crash the worker process.
 
+## Durable Steps
+
+Workflows can checkpoint intermediate results so retries resume after the last completed step instead of redoing work:
+
+```go
+client.Register("order", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+	charge, err := workrail.Step(ctx, "charge-card", func(ctx context.Context) (ChargeResult, error) {
+		return billing.Charge(ctx, order)
+	})
+	if err != nil {
+		return nil, err
+	}
+	_, err = workrail.Step(ctx, "send-receipt", func(ctx context.Context) (bool, error) {
+		return true, email.SendReceipt(ctx, order, charge)
+	})
+	return json.Marshal(charge)
+})
+```
+
+If `send-receipt` fails, the retry skips `charge-card` and returns its saved result — the card is charged once. Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries, and are deleted with their job. `replay` creates a new job, so a replayed workflow starts fresh. Step names must be stable across deploys; results must round-trip through JSON. The built-in `sequence` workflow checkpoints each of its steps automatically.
+
 ## Security
 
 Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.

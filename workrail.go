@@ -5,6 +5,7 @@ package workrail
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -153,6 +154,28 @@ func (c *Client) RunWorker(ctx context.Context, opts WorkerOptions) error {
 		Concurrency:     opts.Concurrency,
 		Logger:          c.logger,
 	}).Run(ctx)
+}
+
+// Step runs fn at most once per job and checkpoints its result, so a retried
+// workflow resumes after its last completed step instead of redoing work.
+// Steps are identified by name within a job; keep names stable across
+// deploys. T must round-trip through JSON.
+func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, error)) (T, error) {
+	var value T
+	raw, err := engine.RunStep(ctx, name, func(ctx context.Context) (json.RawMessage, error) {
+		result, err := fn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	})
+	if err != nil {
+		return value, err
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, fmt.Errorf("step %q: decode checkpoint: %w", name, err)
+	}
+	return value, nil
 }
 
 type EnqueueOption func(*EnqueueRequest)
