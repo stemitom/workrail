@@ -198,7 +198,7 @@ func runWorker(ctx context.Context, cfg appconfig.Config) error {
 		PollInterval:    time.Second,
 		LeaseDuration:   30 * time.Second,
 		ShutdownTimeout: parseDuration(cfg.Worker.ShutdownTimeout, 30*time.Second),
-		RetentionPeriod: parseDuration(cfg.Worker.Retention, 168*time.Hour),
+		RetentionPeriod: parseDuration(cfg.Worker.Retention, 0),
 		Concurrency:     cfg.Worker.Concurrency,
 		Logger:          slog.Default(),
 	}

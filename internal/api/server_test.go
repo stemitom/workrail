@@ -26,6 +26,7 @@ func TestAuthRequiresBearerToken(t *testing.T) {
 		{"wrong token", "/jobs", "Bearer nope", http.StatusUnauthorized},
 		{"wrong scheme", "/jobs", "Basic secret", http.StatusUnauthorized},
 		{"valid token", "/jobs", "Bearer secret", http.StatusOK},
+		{"lowercase scheme", "/jobs", "bearer secret", http.StatusOK},
 		{"healthz needs no token", "/healthz", "", http.StatusOK},
 	}
 	for _, tc := range cases {
@@ -82,7 +83,7 @@ func (s *fakeStore) DeadLetterExhausted(context.Context) (int, error) {
 	return 0, nil
 }
 
-func (s *fakeStore) PruneCompleted(context.Context, time.Duration) (int, error) {
+func (s *fakeStore) PruneCompleted(context.Context, string, time.Duration) (int, error) {
 	return 0, nil
 }
 

@@ -437,7 +437,7 @@ func TestIntegrationPruneCompleted(t *testing.T) {
 		t.Fatalf("age jobs: %v", err)
 	}
 
-	count, err := store.PruneCompleted(ctx, 24*time.Hour)
+	count, err := store.PruneCompleted(ctx, "default", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}

@@ -34,17 +34,33 @@ func (s *Store) Close() {
 	s.db.Close()
 }
 
+// withTx runs fn in a transaction, rolling back on error and committing otherwise.
+func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// tryAdvisoryLock lets concurrent workers skip janitor work another worker is
+// already doing; the lock releases with the transaction.
+func tryAdvisoryLock(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	var held bool
+	err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext($1))`, key).Scan(&held)
+	return held, err
+}
+
 func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.Job, bool, error) {
 	req = engine.NormalizeEnqueue(req)
 	var job engine.Job
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return job, false, err
-	}
-	defer tx.Rollback(ctx)
-
 	inserted := false
-	if err := tx.QueryRow(ctx, `
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
 		INSERT INTO jobs (queue, workflow_type, payload, idempotency_key, max_attempts, run_after)
 		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
 		ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = jobs.updated_at
@@ -52,17 +68,16 @@ func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at,
 			(xmax = 0) AS inserted
 	`, req.Queue, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter).
-		Scan(append(jobScanTargets(&job), &inserted)...); err != nil {
-		return job, false, err
-	}
-	event := "job.enqueued"
-	if !inserted {
-		event = "job.enqueue_idempotent_hit"
-	}
-	if err := appendEventTx(ctx, tx, job.ID, event, map[string]any{"queue": req.Queue, "workflow_type": req.WorkflowType}); err != nil {
-		return job, false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
+			Scan(append(jobScanTargets(&job), &inserted)...); err != nil {
+			return err
+		}
+		event := "job.enqueued"
+		if !inserted {
+			event = "job.enqueue_idempotent_hit"
+		}
+		return appendEventTx(ctx, tx, job.ID, event, map[string]any{"queue": req.Queue, "workflow_type": req.WorkflowType})
+	})
+	if err != nil {
 		return engine.Job{}, false, err
 	}
 	return job, inserted, nil
@@ -75,13 +90,9 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 	if opts.Queue == "" {
 		opts.Queue = "default"
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	rows, err := tx.Query(ctx, `
+	var jobs []engine.Job
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
 		WITH claimable AS (
 			SELECT id
 			FROM jobs
@@ -107,75 +118,94 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 		RETURNING j.id, j.queue, j.workflow_type, j.payload, j.status, j.idempotency_key, j.attempt, j.max_attempts, j.run_after,
 			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.created_at, j.updated_at, j.completed_at
 	`, opts.Limit, opts.WorkerID, pgInterval(opts.LeaseDuration), opts.Queue)
-	if err != nil {
-		return nil, err
-	}
-	jobs, err := scanJobs(rows)
-	if err != nil {
-		return nil, err
-	}
-	for _, job := range jobs {
-		if err := appendEventTx(ctx, tx, job.ID, "job.claimed", map[string]any{"worker_id": opts.WorkerID, "attempt": job.Attempt}); err != nil {
-			return nil, err
+		if err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
+		jobs, err = scanJobs(rows)
+		if err != nil {
+			return err
+		}
+		for _, job := range jobs {
+			if err := appendEventTx(ctx, tx, job.ID, "job.claimed", map[string]any{"worker_id": opts.WorkerID, "attempt": job.Attempt}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return jobs, nil
 }
 
 func (s *Store) DeadLetterExhausted(ctx context.Context) (int, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-
-	deadLettered, err := queryStrings(ctx, tx, `
-		WITH exhausted AS (
-			SELECT id
-			FROM jobs
-			WHERE status = 'running' AND lease_expires_at < now() AND attempt >= max_attempts
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE jobs j
-		SET status = 'dead_letter',
-			error = COALESCE(j.error, 'lease expired after max attempts'),
-			lease_owner = NULL,
-			lease_expires_at = NULL,
-			updated_at = now(),
-			completed_at = now()
-		FROM exhausted
-		WHERE j.id = exhausted.id
-		RETURNING j.id
-	`)
-	if err != nil {
-		return 0, err
-	}
-	for _, jobID := range deadLettered {
-		if err := appendEventTx(ctx, tx, jobID, "job.dead_lettered", map[string]any{"reason": "lease expired after max attempts"}); err != nil {
-			return 0, err
+	count := 0
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		held, err := tryAdvisoryLock(ctx, tx, "workrail:dead_letter_sweep")
+		if err != nil || !held {
+			return err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-	return len(deadLettered), nil
+		deadLettered, err := queryStrings(ctx, tx, `
+			WITH exhausted AS (
+				SELECT id
+				FROM jobs
+				WHERE status = 'running' AND lease_expires_at < now() AND attempt >= max_attempts
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE jobs j
+			SET status = 'dead_letter',
+				error = COALESCE(j.error, 'lease expired after max attempts'),
+				lease_owner = NULL,
+				lease_expires_at = NULL,
+				updated_at = now(),
+				completed_at = now()
+			FROM exhausted
+			WHERE j.id = exhausted.id
+			RETURNING j.id
+		`)
+		if err != nil {
+			return err
+		}
+		for _, jobID := range deadLettered {
+			if err := appendEventTx(ctx, tx, jobID, "job.dead_lettered", map[string]any{"reason": "lease expired after max attempts"}); err != nil {
+				return err
+			}
+		}
+		count = len(deadLettered)
+		return nil
+	})
+	return count, err
 }
 
-func (s *Store) PruneCompleted(ctx context.Context, olderThan time.Duration) (int, error) {
+// pruneBatchSize bounds each retention delete so a large backlog cannot hold
+// locks or bloat WAL in one transaction; the remainder goes to later sweeps.
+const pruneBatchSize = 5000
+
+func (s *Store) PruneCompleted(ctx context.Context, queue string, olderThan time.Duration) (int, error) {
 	if olderThan <= 0 {
 		return 0, nil
 	}
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM jobs
-		WHERE status IN ('succeeded', 'canceled') AND completed_at < now() - $1::interval
-	`, pgInterval(olderThan))
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+	count := 0
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		held, err := tryAdvisoryLock(ctx, tx, "workrail:prune:"+queue)
+		if err != nil || !held {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM jobs
+			WHERE id IN (
+				SELECT id FROM jobs
+				WHERE queue = $1 AND status IN ('succeeded', 'canceled') AND completed_at < now() - $2::interval
+				LIMIT $3
+			)
+		`, queue, pgInterval(olderThan), pruneBatchSize)
+		if err != nil {
+			return err
+		}
+		count = int(tag.RowsAffected())
+		return nil
+	})
+	return count, err
 }
 
 func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error {
@@ -213,42 +243,34 @@ func (s *Store) Complete(ctx context.Context, jobID, workerID string, result []b
 }
 
 func (s *Store) Fail(ctx context.Context, jobID, workerID string, cause error) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	var attempt, maxAttempts int
-	if err := tx.QueryRow(ctx, `
-		SELECT attempt, max_attempts FROM jobs
-		WHERE id = $1 AND lease_owner = $2 AND status = 'running'
-		FOR UPDATE
-	`, jobID, workerID).Scan(&attempt, &maxAttempts); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return engine.ErrInvalidTransition
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		var attempt, maxAttempts int
+		if err := tx.QueryRow(ctx, `
+			SELECT attempt, max_attempts FROM jobs
+			WHERE id = $1 AND lease_owner = $2 AND status = 'running'
+			FOR UPDATE
+		`, jobID, workerID).Scan(&attempt, &maxAttempts); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return engine.ErrInvalidTransition
+			}
+			return err
 		}
-		return err
-	}
 
-	next := engine.NextStatusAfterFailure(attempt, maxAttempts)
-	runAfter := time.Now().UTC().Add(engine.Backoff(attempt))
-	if next == engine.StatusDeadLetter {
-		runAfter = time.Now().UTC()
-	}
-	_, err = tx.Exec(ctx, `
-		UPDATE jobs
-		SET status = $3::job_status, error = $4, run_after = $5, lease_owner = NULL, lease_expires_at = NULL,
-			updated_at = now(), completed_at = CASE WHEN $3::job_status = 'dead_letter' THEN now() ELSE NULL END
-		WHERE id = $1 AND lease_owner = $2
-	`, jobID, workerID, next, cause.Error(), runAfter)
-	if err != nil {
-		return err
-	}
-	if err := appendEventTx(ctx, tx, jobID, "job.failed", map[string]any{"error": cause.Error(), "next_status": next}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+		next := engine.NextStatusAfterFailure(attempt, maxAttempts)
+		runAfter := time.Now().UTC().Add(engine.Backoff(attempt))
+		if next == engine.StatusDeadLetter {
+			runAfter = time.Now().UTC()
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = $3::job_status, error = $4, run_after = $5, lease_owner = NULL, lease_expires_at = NULL,
+				updated_at = now(), completed_at = CASE WHEN $3::job_status = 'dead_letter' THEN now() ELSE NULL END
+			WHERE id = $1 AND lease_owner = $2
+		`, jobID, workerID, next, cause.Error(), runAfter); err != nil {
+			return err
+		}
+		return appendEventTx(ctx, tx, jobID, "job.failed", map[string]any{"error": cause.Error(), "next_status": next})
+	})
 }
 
 func (s *Store) Cancel(ctx context.Context, jobID string) error {

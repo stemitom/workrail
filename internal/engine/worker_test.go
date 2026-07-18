@@ -206,7 +206,7 @@ func (s *workerTestStore) DeadLetterExhausted(context.Context) (int, error) {
 	return 0, nil
 }
 
-func (s *workerTestStore) PruneCompleted(context.Context, time.Duration) (int, error) {
+func (s *workerTestStore) PruneCompleted(context.Context, string, time.Duration) (int, error) {
 	return 0, nil
 }
 

@@ -75,7 +75,7 @@ Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Au
 
 ## Retention
 
-Workers prune `succeeded` and `canceled` jobs (and their events) older than `worker.retention` (or `WORKRAIL_RETENTION`, default `168h`) during the periodic sweep. Set it to `0s` to keep everything. Dead-lettered jobs are never pruned automatically — they wait for an operator.
+Retention is off by default. Set `worker.retention` (or `WORKRAIL_RETENTION`) to e.g. `168h` and workers will prune `succeeded` and `canceled` jobs (and their events) in their own queue older than that, in bounded batches during the periodic sweep. Invalid duration values fail at startup rather than silently defaulting. Dead-lettered jobs are never pruned automatically — they wait for an operator.
 
 ## Operations
 

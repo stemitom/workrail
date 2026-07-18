@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -48,7 +50,7 @@ func Default() Config {
 			Concurrency:     4,
 			ShutdownTimeout: "30s",
 			MetricsAddr:     ":9090",
-			Retention:       "168h",
+			Retention:       "0s",
 		},
 		Tracing: TracingConfig{
 			Enabled:  false,
@@ -70,7 +72,7 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && path == "workrail.yaml" {
 			applyEnv(&cfg)
-			return cfg, nil
+			return cfg, validate(cfg)
 		}
 		return cfg, err
 	}
@@ -79,7 +81,19 @@ func Load(path string) (Config, error) {
 	}
 	applyDefaults(&cfg)
 	applyEnv(&cfg)
-	return cfg, nil
+	return cfg, validate(cfg)
+}
+
+// validate rejects malformed durations at startup; a silent fallback here
+// could quietly enable or change destructive retention pruning.
+func validate(cfg Config) error {
+	if _, err := time.ParseDuration(cfg.Worker.ShutdownTimeout); err != nil {
+		return fmt.Errorf("invalid worker.shutdown_timeout %q: %w", cfg.Worker.ShutdownTimeout, err)
+	}
+	if _, err := time.ParseDuration(cfg.Worker.Retention); err != nil {
+		return fmt.Errorf("invalid worker.retention %q: %w", cfg.Worker.Retention, err)
+	}
+	return nil
 }
 
 func applyDefaults(cfg *Config) {

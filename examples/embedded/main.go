@@ -5,7 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -27,8 +27,7 @@ func main() {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 	defer client.Close()
 
@@ -46,8 +45,7 @@ func main() {
 		workrail.WithMaxAttempts(3),
 	)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 	slog.Info("enqueued", "job_id", job.ID, "inserted", inserted)
 
@@ -57,7 +55,6 @@ func main() {
 		LeaseDuration:   30 * time.Second,
 		RetentionPeriod: 7 * 24 * time.Hour,
 	}); err != nil && ctx.Err() == nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 }

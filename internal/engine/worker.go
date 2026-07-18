@@ -88,7 +88,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.logger().Warn("dead-lettered jobs with expired leases and exhausted attempts", "count", count)
 			}
 			if w.RetentionPeriod > 0 {
-				if count, err := w.Store.PruneCompleted(ctx, w.RetentionPeriod); err != nil {
+				if count, err := w.Store.PruneCompleted(ctx, w.Queue, w.RetentionPeriod); err != nil {
 					w.logger().Error("retention prune failed", "error", err)
 				} else if count > 0 {
 					w.logger().Info("pruned completed jobs", "count", count, "retention", w.RetentionPeriod)

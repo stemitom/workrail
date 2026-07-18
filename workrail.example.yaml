@@ -11,8 +11,9 @@ worker:
   concurrency: 4
   shutdown_timeout: 30s
   metrics_addr: :9090
-  # Succeeded and canceled jobs older than this are deleted. "0s" disables pruning.
-  retention: 168h
+  # Succeeded and canceled jobs in this worker's queue older than this are
+  # deleted. Disabled by default; set e.g. 168h to enable.
+  retention: 0s
 
 tracing:
   enabled: false

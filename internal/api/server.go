@@ -20,11 +20,11 @@ type Server struct {
 	store     engine.Store
 	logger    *slog.Logger
 	mux       *http.ServeMux
-	authToken string
+	authToken []byte
 }
 
 func New(store engine.Store, logger *slog.Logger, authToken string) *Server {
-	s := &Server{store: store, logger: logger, mux: http.NewServeMux(), authToken: authToken}
+	s := &Server{store: store, logger: logger, mux: http.NewServeMux(), authToken: []byte(authToken)}
 	observability.RegisterQueueDepthCollector(store)
 	s.routes()
 	if authToken == "" {
@@ -33,19 +33,21 @@ func New(store engine.Store, logger *slog.Logger, authToken string) *Server {
 	return s
 }
 
+// Handler authenticates before tracing and metrics so unauthenticated probes
+// of arbitrary paths cannot create unbounded metric label cardinality.
 func (s *Server) Handler() http.Handler {
-	return otelhttp.NewHandler(observability.HTTPMetrics(s.auth(s.mux)), "workrail.http")
+	return s.auth(otelhttp.NewHandler(observability.HTTPMetrics(s.mux), "workrail.http"))
 }
 
 // auth exempts /healthz so load balancers can probe without credentials.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authToken == "" || r.URL.Path == "/healthz" {
+		if len(s.authToken) == 0 || r.URL.Path == "/healthz" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare([]byte(token), s.authToken) != 1 {
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
 			return
 		}
