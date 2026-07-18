@@ -415,11 +415,18 @@ func TestIntegrationStepCheckpoints(t *testing.T) {
 	if _, found, err := store.GetStep(ctx, enqueued.ID, "charge"); err != nil || found {
 		t.Fatalf("get before save: found=%v err=%v, want absent", found, err)
 	}
-	if err := store.SaveStep(ctx, enqueued.ID, "charge", []byte(`{"amount":42}`)); err != nil {
+	if _, err := store.SaveStep(ctx, enqueued.ID, "worker-b", "charge", []byte(`{"amount":1}`)); !errors.Is(err, engine.ErrInvalidTransition) {
+		t.Fatalf("save from non-owner: err = %v, want ErrInvalidTransition", err)
+	}
+	if _, err := store.SaveStep(ctx, enqueued.ID, "worker-a", "charge", []byte(`{"amount":42}`)); err != nil {
 		t.Fatalf("save step: %v", err)
 	}
-	if err := store.SaveStep(ctx, enqueued.ID, "charge", []byte(`{"amount":99}`)); err != nil {
-		t.Fatalf("second save should be a no-op, got: %v", err)
+	stored, err := store.SaveStep(ctx, enqueued.ID, "worker-a", "charge", []byte(`{"amount":99}`))
+	if err != nil {
+		t.Fatalf("conflicting save: %v", err)
+	}
+	if string(stored) != `{"amount": 42}` && string(stored) != `{"amount":42}` {
+		t.Fatalf("conflicting save returned %s, want the winning first write", stored)
 	}
 	result, found, err := store.GetStep(ctx, enqueued.ID, "charge")
 	if err != nil || !found {

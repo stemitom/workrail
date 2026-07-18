@@ -158,6 +158,10 @@ type workerTestStore struct {
 	claimJobs    []Job
 	heartbeatErr error
 	steps        map[string]json.RawMessage
+	// getStepMisses simulates a duplicate-execution race where the checkpoint
+	// lands after this worker's lookup: GetStep reports not-found while
+	// SaveStep still hits the existing row.
+	getStepMisses bool
 
 	completed      bool
 	completedJobID string
@@ -210,18 +214,24 @@ func (s *workerTestStore) DeadLetterExhausted(context.Context) (int, error) {
 func (s *workerTestStore) GetStep(_ context.Context, jobID, stepName string) (json.RawMessage, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.getStepMisses {
+		return nil, false, nil
+	}
 	result, ok := s.steps[jobID+"/"+stepName]
 	return result, ok, nil
 }
 
-func (s *workerTestStore) SaveStep(_ context.Context, jobID, stepName string, result json.RawMessage) error {
+func (s *workerTestStore) SaveStep(_ context.Context, jobID, _, stepName string, result json.RawMessage) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.steps[jobID+"/"+stepName]; ok {
+		return existing, nil
+	}
 	if s.steps == nil {
 		s.steps = map[string]json.RawMessage{}
 	}
 	s.steps[jobID+"/"+stepName] = result
-	return nil
+	return result, nil
 }
 
 func (s *workerTestStore) PruneCompleted(context.Context, string, time.Duration) (int, error) {

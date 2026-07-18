@@ -88,7 +88,9 @@ client.Register("order", func(ctx context.Context, payload json.RawMessage) (jso
 })
 ```
 
-If `send-receipt` fails, the retry skips `charge-card` and returns its saved result — the card is charged once. Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries, and are deleted with their job. `replay` creates a new job, so a replayed workflow starts fresh. Step names must be stable across deploys; results must round-trip through JSON. The built-in `sequence` workflow checkpoints each of its steps automatically.
+If `send-receipt` fails, the retry skips `charge-card` and returns its saved result instead of charging again. The guarantee is effectively once, not exactly once: a crash in the window between a step's side effect and its checkpoint commit re-runs the step on the next attempt, so steps whose side effects must never repeat should be idempotent (e.g. pass an idempotency key to the payment provider). A worker that loses its lease is rejected on its next checkpoint write, stopping zombie execution at the next step boundary.
+
+Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries (`dlq retry` resumes; use `replay` for a genuinely fresh run), and are deleted with their job. Keep step names, and result types, stable while jobs are in flight — a renamed step re-runs, and a checkpoint that no longer decodes into the step's type fails the job. Results are stored as normalized `jsonb`; don't rely on byte-identical output. The built-in `sequence` workflow checkpoints each of its steps automatically and rejects duplicate step names.
 
 ## Security
 

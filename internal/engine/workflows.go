@@ -77,11 +77,16 @@ func sequenceWorkflow(reg *Registry) WorkflowFunc {
 			if step.Name == "" {
 				step.Name = fmt.Sprintf("step_%d", i+1)
 			}
+			// A duplicate name would silently return the first step's
+			// checkpoint instead of running this step's activity.
+			if _, exists := results[step.Name]; exists {
+				return nil, fmt.Errorf("duplicate step name %q", step.Name)
+			}
 			result, err := RunStep(ctx, step.Name, func(ctx context.Context) (json.RawMessage, error) {
 				return reg.Execute(ctx, step.Activity, step.Input)
 			})
 			if err != nil {
-				return nil, fmt.Errorf("%s failed: %w", step.Name, err)
+				return nil, err
 			}
 			results[step.Name] = result
 		}

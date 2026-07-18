@@ -29,7 +29,7 @@ func TestRunStepWithoutRunnerJustRuns(t *testing.T) {
 
 func TestRunStepCheckpointsPerJob(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
 
 	calls := 0
 	step := func(context.Context) (json.RawMessage, error) {
@@ -52,7 +52,7 @@ func TestRunStepCheckpointsPerJob(t *testing.T) {
 		t.Fatalf("checkpointed result %s != original %s", second, first)
 	}
 
-	otherJob := WithStepRunner(context.Background(), store, "job-2")
+	otherJob := WithStepRunner(context.Background(), store, "job-2", "worker-a")
 	if _, err := RunStep(otherJob, "charge", step); err != nil {
 		t.Fatalf("other job: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRunStepCheckpointsPerJob(t *testing.T) {
 
 func TestRunStepDoesNotCheckpointFailures(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
 
 	calls := 0
 	step := func(context.Context) (json.RawMessage, error) {
@@ -82,6 +82,27 @@ func TestRunStepDoesNotCheckpointFailures(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2 (failures must not checkpoint)", calls)
+	}
+}
+
+func TestRunStepRaceLoserGetsWinningCheckpoint(t *testing.T) {
+	store := &workerTestStore{getStepMisses: true}
+	if _, err := store.SaveStep(context.Background(), "job-1", "worker-a", "charge", json.RawMessage(`{"winner":true}`)); err != nil {
+		t.Fatalf("seed winning checkpoint: %v", err)
+	}
+
+	// The loser of a duplicate-execution race: its GetStep missed (checkpoint
+	// landed after), it computed its own result, and SaveStep hit the
+	// conflict. RunStep must return the persisted winner, not the local value.
+	loser := WithStepRunner(context.Background(), store, "job-1", "worker-b")
+	result, err := RunStep(loser, "charge", func(context.Context) (json.RawMessage, error) {
+		return json.RawMessage(`{"winner":false}`), nil
+	})
+	if err != nil {
+		t.Fatalf("run step: %v", err)
+	}
+	if string(result) != `{"winner":true}` {
+		t.Fatalf("result = %s, want the persisted winning checkpoint", result)
 	}
 }
 

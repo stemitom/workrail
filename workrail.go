@@ -156,10 +156,14 @@ func (c *Client) RunWorker(ctx context.Context, opts WorkerOptions) error {
 	}).Run(ctx)
 }
 
-// Step runs fn at most once per job and checkpoints its result, so a retried
-// workflow resumes after its last completed step instead of redoing work.
-// Steps are identified by name within a job; keep names stable across
-// deploys. T must round-trip through JSON.
+// Step checkpoints fn's result per job, so a retried workflow resumes after
+// its last completed step instead of redoing work. The guarantee is
+// effectively once, not exactly once: a crash between fn's side effect and
+// the checkpoint commit re-runs the step on retry, so side effects that must
+// not repeat should be idempotent. Steps are identified by name within a job;
+// keep names, and T's JSON shape, stable while jobs are in flight. T must
+// round-trip through JSON — results are stored as normalized jsonb, so byte
+// layout and key order are not preserved.
 func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, error)) (T, error) {
 	var value T
 	raw, err := engine.RunStep(ctx, name, func(ctx context.Context) (json.RawMessage, error) {

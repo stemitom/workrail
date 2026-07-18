@@ -88,8 +88,8 @@ func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, b
 	return nil, false, nil
 }
 
-func (s *fakeStore) SaveStep(context.Context, string, string, json.RawMessage) error {
-	return nil
+func (s *fakeStore) SaveStep(_ context.Context, _, _, _ string, result json.RawMessage) (json.RawMessage, error) {
+	return result, nil
 }
 
 func (s *fakeStore) PruneCompleted(context.Context, string, time.Duration) (int, error) {

@@ -222,8 +222,18 @@ func (s *Store) GetStep(ctx context.Context, jobID, stepName string) (json.RawMe
 	return result, true, nil
 }
 
-func (s *Store) SaveStep(ctx context.Context, jobID, stepName string, result json.RawMessage) error {
-	return s.withTx(ctx, func(tx pgx.Tx) error {
+func (s *Store) SaveStep(ctx context.Context, jobID, workerID, stepName string, result json.RawMessage) (json.RawMessage, error) {
+	var stored json.RawMessage
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var owned bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND lease_owner = $2 AND status = 'running')
+		`, jobID, workerID).Scan(&owned); err != nil {
+			return err
+		}
+		if !owned {
+			return engine.ErrInvalidTransition
+		}
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO job_steps (job_id, step_name, result) VALUES ($1, $2, $3)
 			ON CONFLICT (job_id, step_name) DO NOTHING
@@ -232,10 +242,19 @@ func (s *Store) SaveStep(ctx context.Context, jobID, stepName string, result jso
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return nil
+			// Lost a first-write-wins race: hand back the winning checkpoint so
+			// the caller continues with the value later attempts will see.
+			return tx.QueryRow(ctx, `
+				SELECT result FROM job_steps WHERE job_id = $1 AND step_name = $2
+			`, jobID, stepName).Scan(&stored)
 		}
+		stored = result
 		return appendEventTx(ctx, tx, jobID, "job.step_completed", map[string]any{"step": stepName})
 	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
 }
 
 func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error {
