@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"workrail/internal/engine"
-	"workrail/internal/store/postgres"
+	"github.com/stemitom/workrail/internal/engine"
+	"github.com/stemitom/workrail/internal/store/postgres"
 )
 
 const DefaultDatabaseURL = "postgres://durable:durable@localhost:5432/durable?sslmode=disable"
@@ -45,6 +45,8 @@ type WorkerOptions struct {
 	PollInterval    time.Duration
 	LeaseDuration   time.Duration
 	ShutdownTimeout time.Duration
+	// RetentionPeriod prunes succeeded and canceled jobs during sweeps; zero disables pruning.
+	RetentionPeriod time.Duration
 	Concurrency     int
 }
 
@@ -147,6 +149,7 @@ func (c *Client) RunWorker(ctx context.Context, opts WorkerOptions) error {
 		PollInterval:    opts.PollInterval,
 		LeaseDuration:   opts.LeaseDuration,
 		ShutdownTimeout: opts.ShutdownTimeout,
+		RetentionPeriod: opts.RetentionPeriod,
 		Concurrency:     opts.Concurrency,
 		Logger:          c.logger,
 	}).Run(ctx)

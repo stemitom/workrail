@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"workrail/internal/observability"
+	"github.com/stemitom/workrail/internal/observability"
 )
 
 type Status string
@@ -78,7 +78,6 @@ var (
 	ErrNotFound          = errors.New("job not found")
 	ErrInvalidTransition = errors.New("invalid job state transition")
 	ErrInvalidStatus     = errors.New("invalid job status")
-	ErrCanceled          = errors.New("job canceled")
 )
 
 func NormalizeEnqueue(req EnqueueRequest) EnqueueRequest {

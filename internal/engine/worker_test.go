@@ -36,6 +36,75 @@ func TestWorkerRecordsPanicAsFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerCancelsJobWhenLeaseLost(t *testing.T) {
+	store := &workerTestStore{heartbeatErr: ErrInvalidTransition}
+	registry := NewRegistry()
+	registry.Register("wait", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	worker := &Worker{
+		ID:            "worker-a",
+		Store:         store,
+		Registry:      registry,
+		LeaseDuration: 3 * time.Millisecond,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.runJob(context.Background(), Job{ID: "job-1", WorkflowType: "wait", Payload: []byte(`{}`)})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job was not canceled after lease loss")
+	}
+	if store.completed {
+		t.Fatal("job should not complete after losing its lease")
+	}
+	if store.failedJobID != "job-1" {
+		t.Fatalf("failed job = %q, want job-1", store.failedJobID)
+	}
+	if !errors.Is(store.failedErr, context.Canceled) {
+		t.Fatalf("failure error = %v, want context.Canceled", store.failedErr)
+	}
+}
+
+func TestWorkerCancelsJobWhenHeartbeatsKeepFailing(t *testing.T) {
+	store := &workerTestStore{heartbeatErr: errors.New("db unreachable")}
+	registry := NewRegistry()
+	registry.Register("wait", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	worker := &Worker{
+		ID:            "worker-a",
+		Store:         store,
+		Registry:      registry,
+		LeaseDuration: 30 * time.Millisecond,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.runJob(context.Background(), Job{ID: "job-1", WorkflowType: "wait", Payload: []byte(`{}`)})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job was not canceled after sustained heartbeat failures")
+	}
+	if store.completed {
+		t.Fatal("job should not complete without a confirmed lease")
+	}
+	if !errors.Is(store.failedErr, context.Canceled) {
+		t.Fatalf("failure error = %v, want context.Canceled", store.failedErr)
+	}
+}
+
 func TestWorkerDrainsInFlightJobsOnShutdown(t *testing.T) {
 	started := make(chan struct{})
 	store := &workerTestStore{
@@ -86,7 +155,8 @@ func TestWorkerDrainsInFlightJobsOnShutdown(t *testing.T) {
 type workerTestStore struct {
 	mu sync.Mutex
 
-	claimJobs []Job
+	claimJobs    []Job
+	heartbeatErr error
 
 	completed      bool
 	completedJobID string
@@ -106,8 +176,10 @@ func (s *workerTestStore) Claim(context.Context, ClaimOptions) ([]Job, error) {
 	return jobs, nil
 }
 
-func (s *workerTestStore) Heartbeat(context.Context, string, string) error {
-	return nil
+func (s *workerTestStore) Heartbeat(context.Context, string, string, time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.heartbeatErr
 }
 
 func (s *workerTestStore) Complete(_ context.Context, jobID, _ string, _ []byte) error {
@@ -128,6 +200,14 @@ func (s *workerTestStore) Fail(_ context.Context, jobID, _ string, cause error) 
 
 func (s *workerTestStore) Cancel(context.Context, string) error {
 	return nil
+}
+
+func (s *workerTestStore) DeadLetterExhausted(context.Context) (int, error) {
+	return 0, nil
+}
+
+func (s *workerTestStore) PruneCompleted(context.Context, time.Duration) (int, error) {
+	return 0, nil
 }
 
 func (s *workerTestStore) RetryDeadLetter(context.Context, string) (Job, error) {

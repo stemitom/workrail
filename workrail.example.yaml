@@ -2,6 +2,8 @@ database_url: postgres://durable:durable@localhost:5432/durable?sslmode=disable
 
 api:
   addr: :8080
+  # Bearer token required on every endpoint except /healthz. Empty disables auth.
+  auth_token: ""
 
 worker:
   id: worker-1
@@ -9,6 +11,8 @@ worker:
   concurrency: 4
   shutdown_timeout: 30s
   metrics_addr: :9090
+  # Succeeded and canceled jobs older than this are deleted. "0s" disables pruning.
+  retention: 168h
 
 tracing:
   enabled: false

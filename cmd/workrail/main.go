@@ -16,12 +16,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"workrail/internal/api"
-	appconfig "workrail/internal/config"
-	"workrail/internal/engine"
-	"workrail/internal/migrations"
-	"workrail/internal/observability"
-	"workrail/internal/store/postgres"
+	"github.com/stemitom/workrail/internal/api"
+	appconfig "github.com/stemitom/workrail/internal/config"
+	"github.com/stemitom/workrail/internal/engine"
+	"github.com/stemitom/workrail/internal/migrations"
+	"github.com/stemitom/workrail/internal/observability"
+	"github.com/stemitom/workrail/internal/store/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -151,7 +151,7 @@ func runAPI(ctx context.Context, cfg appconfig.Config) error {
 	addr := cfg.API.Addr
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(store, slog.Default()).Handler(),
+		Handler:           api.New(store, slog.Default(), cfg.API.AuthToken).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -198,6 +198,7 @@ func runWorker(ctx context.Context, cfg appconfig.Config) error {
 		PollInterval:    time.Second,
 		LeaseDuration:   30 * time.Second,
 		ShutdownTimeout: parseDuration(cfg.Worker.ShutdownTimeout, 30*time.Second),
+		RetentionPeriod: parseDuration(cfg.Worker.Retention, 168*time.Hour),
 		Concurrency:     cfg.Worker.Concurrency,
 		Logger:          slog.Default(),
 	}

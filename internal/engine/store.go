@@ -1,11 +1,16 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Store interface {
 	Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error)
 	Claim(ctx context.Context, opts ClaimOptions) ([]Job, error)
-	Heartbeat(ctx context.Context, jobID, workerID string) error
+	Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error
+	DeadLetterExhausted(ctx context.Context) (int, error)
+	PruneCompleted(ctx context.Context, olderThan time.Duration) (int, error)
 	Complete(ctx context.Context, jobID, workerID string, result []byte) error
 	Fail(ctx context.Context, jobID, workerID string, cause error) error
 	Cancel(ctx context.Context, jobID string) error

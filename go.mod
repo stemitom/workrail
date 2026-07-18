@@ -1,4 +1,4 @@
-module workrail
+module github.com/stemitom/workrail
 
 go 1.25.0
 

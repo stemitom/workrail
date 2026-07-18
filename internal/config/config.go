@@ -18,7 +18,8 @@ type Config struct {
 }
 
 type APIConfig struct {
-	Addr string `yaml:"addr"`
+	Addr      string `yaml:"addr"`
+	AuthToken string `yaml:"auth_token"`
 }
 
 type WorkerConfig struct {
@@ -27,6 +28,7 @@ type WorkerConfig struct {
 	Concurrency     int    `yaml:"concurrency"`
 	ShutdownTimeout string `yaml:"shutdown_timeout"`
 	MetricsAddr     string `yaml:"metrics_addr"`
+	Retention       string `yaml:"retention"`
 }
 
 type TracingConfig struct {
@@ -46,6 +48,7 @@ func Default() Config {
 			Concurrency:     4,
 			ShutdownTimeout: "30s",
 			MetricsAddr:     ":9090",
+			Retention:       "168h",
 		},
 		Tracing: TracingConfig{
 			Enabled:  false,
@@ -96,6 +99,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Worker.ShutdownTimeout == "" {
 		cfg.Worker.ShutdownTimeout = defaults.Worker.ShutdownTimeout
 	}
+	if cfg.Worker.Retention == "" {
+		cfg.Worker.Retention = defaults.Worker.Retention
+	}
 	if cfg.Worker.MetricsAddr == "" {
 		cfg.Worker.MetricsAddr = defaults.Worker.MetricsAddr
 	}
@@ -110,6 +116,12 @@ func applyEnv(cfg *Config) {
 	}
 	if value := firstEnv("WORKRAIL_API_ADDR", "DWF_API_ADDR"); value != "" {
 		cfg.API.Addr = value
+	}
+	if value := os.Getenv("WORKRAIL_API_TOKEN"); value != "" {
+		cfg.API.AuthToken = value
+	}
+	if value := os.Getenv("WORKRAIL_RETENTION"); value != "" {
+		cfg.Worker.Retention = value
 	}
 	if value := firstEnv("WORKRAIL_WORKER_ID", "DWF_WORKER_ID"); value != "" {
 		cfg.Worker.ID = value

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"workrail/internal/engine"
+	"github.com/stemitom/workrail/internal/engine"
 )
 
 func integrationStore(t *testing.T) (*Store, context.Context) {
@@ -91,7 +91,7 @@ func TestIntegrationClaimCompleteLifecycle(t *testing.T) {
 		t.Fatalf("attempt = %d, want 1", claimed[0].Attempt)
 	}
 
-	if err := store.Heartbeat(ctx, enqueued.ID, "worker-a"); err != nil {
+	if err := store.Heartbeat(ctx, enqueued.ID, "worker-a", time.Minute); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
 	if err := store.Complete(ctx, enqueued.ID, "worker-a", []byte(`{"done":true}`)); err != nil {
@@ -262,6 +262,104 @@ func TestIntegrationExpiredLeaseCanBeReclaimed(t *testing.T) {
 	}
 }
 
+func TestIntegrationHeartbeatExtendsConfiguredLease(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "echo",
+		Payload:      []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: 2 * time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := store.Heartbeat(ctx, enqueued.ID, "worker-a", 2*time.Minute); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	job, _, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if job.LeaseExpiresAt == nil {
+		t.Fatal("lease_expires_at is nil after heartbeat")
+	}
+	if remaining := time.Until(*job.LeaseExpiresAt); remaining < time.Minute {
+		t.Fatalf("lease remaining = %s, want ~2m; heartbeat did not honor configured lease duration", remaining)
+	}
+}
+
+func TestIntegrationExhaustedExpiredLeaseDeadLetters(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "echo",
+		Payload:      []byte(`{}`),
+		MaxAttempts:  1,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	first, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Nanosecond,
+		Limit:         1,
+	})
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first claim got %d jobs, want 1", len(first))
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	second, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-b",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	})
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("second claim = %+v, want none; exhausted job must not be reclaimed", second)
+	}
+
+	count, err := store.DeadLetterExhausted(ctx)
+	if err != nil {
+		t.Fatalf("dead letter exhausted: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("dead-lettered %d jobs, want 1", count)
+	}
+
+	job, events, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if job.Status != engine.StatusDeadLetter {
+		t.Fatalf("status = %s, want %s", job.Status, engine.StatusDeadLetter)
+	}
+	if job.Error == nil || *job.Error == "" {
+		t.Fatal("dead-lettered job should record an error")
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType == "job.dead_lettered" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("events = %+v, want a job.dead_lettered event", events)
+	}
+}
+
 func TestIntegrationCancelAndReplay(t *testing.T) {
 	store, ctx := integrationStore(t)
 
@@ -292,6 +390,65 @@ func TestIntegrationCancelAndReplay(t *testing.T) {
 	}
 	if replayed.Status != engine.StatusQueued {
 		t.Fatalf("replayed status = %s, want %s", replayed.Status, engine.StatusQueued)
+	}
+}
+
+func TestIntegrationPruneCompleted(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	succeeded, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "echo",
+		Payload:      []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := store.Complete(ctx, succeeded.ID, "worker-a", []byte(`{}`)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	deadLettered, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "echo",
+		Payload:      []byte(`{}`),
+		MaxAttempts:  1,
+	})
+	if err != nil {
+		t.Fatalf("enqueue dead letter: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim dead letter: %v", err)
+	}
+	if err := store.Fail(ctx, deadLettered.ID, "worker-a", errors.New("boom")); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	if _, err := store.db.Exec(ctx, "UPDATE jobs SET completed_at = now() - interval '48 hours'"); err != nil {
+		t.Fatalf("age jobs: %v", err)
+	}
+
+	count, err := store.PruneCompleted(ctx, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("pruned %d jobs, want 1", count)
+	}
+	if _, _, err := store.Get(ctx, succeeded.ID); !errors.Is(err, engine.ErrNotFound) {
+		t.Fatalf("get succeeded job after prune: err = %v, want ErrNotFound", err)
+	}
+	if job, _, err := store.Get(ctx, deadLettered.ID); err != nil || job.Status != engine.StatusDeadLetter {
+		t.Fatalf("dead-lettered job must survive pruning; job = %+v, err = %v", job, err)
 	}
 }
 

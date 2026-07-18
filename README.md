@@ -2,6 +2,12 @@
 
 A mini Temporal-style durable workflow engine in Go. It includes an API server, worker runtime, PostgreSQL-backed state, idempotent enqueue, retries with exponential backoff, dead-letter handling, heartbeats, lease-based task claiming, OpenTelemetry spans, Prometheus metrics, and a CLI.
 
+```bash
+go get github.com/stemitom/workrail
+```
+
+See `examples/embedded` for registering workflows and running a worker inside your own service.
+
 ## Quick Start
 
 ```bash
@@ -54,14 +60,22 @@ make integration-test
 
 ```text
 queued -> running -> succeeded
-   |         |   \-> retrying -> queued
-   |         \----> failed -> dead_letter
-   \--------------> canceled
+   |         |   \-> retrying -> running (after backoff)
+   |         \-----> dead_letter
+   \---------------> canceled
 ```
 
-Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path.
+Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path. Workers also run a periodic sweep (every lease duration, across all queues) that moves running jobs with expired leases and exhausted attempts to `dead_letter`, so a job that repeatedly kills its worker cannot loop forever. When a worker's heartbeat is rejected — its lease was reclaimed or the job was canceled — it cancels the workflow context and stops executing that job; if heartbeats keep failing for any other reason, the worker cancels the job before its unrenewed lease expires rather than finish work it may no longer own.
 
 Workers stop claiming new jobs when their process context is canceled. In-flight jobs are allowed to drain for `WORKRAIL_SHUTDOWN_TIMEOUT`; if that timeout elapses, Workrail cancels the in-flight workflow contexts so jobs can fail or be reclaimed by lease expiry. Workflow panics are recovered and recorded as job failures, so a single bad workflow does not crash the worker process.
+
+## Security
+
+Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.
+
+## Retention
+
+Workers prune `succeeded` and `canceled` jobs (and their events) older than `worker.retention` (or `WORKRAIL_RETENTION`, default `168h`) during the periodic sweep. Set it to `0s` to keep everything. Dead-lettered jobs are never pruned automatically — they wait for an operator.
 
 ## Operations
 

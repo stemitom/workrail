@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -8,28 +9,48 @@ import (
 	"strconv"
 	"strings"
 
-	"workrail/internal/engine"
-	"workrail/internal/observability"
+	"github.com/stemitom/workrail/internal/engine"
+	"github.com/stemitom/workrail/internal/observability"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
-	store  engine.Store
-	logger *slog.Logger
-	mux    *http.ServeMux
+	store     engine.Store
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	authToken string
 }
 
-func New(store engine.Store, logger *slog.Logger) *Server {
-	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
+func New(store engine.Store, logger *slog.Logger, authToken string) *Server {
+	s := &Server{store: store, logger: logger, mux: http.NewServeMux(), authToken: authToken}
 	observability.RegisterQueueDepthCollector(store)
 	s.routes()
+	if authToken == "" {
+		logger.Warn("api auth token not configured; all endpoints are unauthenticated")
+	}
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
-	return otelhttp.NewHandler(observability.HTTPMetrics(s.mux), "workrail.http")
+	return otelhttp.NewHandler(observability.HTTPMetrics(s.auth(s.mux)), "workrail.http")
+}
+
+// auth exempts /healthz so load balancers can probe without credentials.
+func (s *Server) auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" || r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routes() {

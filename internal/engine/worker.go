@@ -2,16 +2,20 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sync"
 	"time"
 
-	"workrail/internal/observability"
+	"github.com/stemitom/workrail/internal/observability"
 
 	"go.opentelemetry.io/otel"
 )
+
+// drainGrace bounds how long a timed-out drain waits for canceled jobs to record their failures.
+const drainGrace = 5 * time.Second
 
 type Worker struct {
 	ID              string
@@ -21,6 +25,8 @@ type Worker struct {
 	PollInterval    time.Duration
 	LeaseDuration   time.Duration
 	ShutdownTimeout time.Duration
+	// RetentionPeriod prunes succeeded and canceled jobs during sweeps; zero disables pruning.
+	RetentionPeriod time.Duration
 	Concurrency     int
 	Logger          *slog.Logger
 }
@@ -35,6 +41,8 @@ func (w *Worker) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	ticker := time.NewTicker(w.PollInterval)
 	defer ticker.Stop()
+	sweepTicker := time.NewTicker(w.LeaseDuration)
+	defer sweepTicker.Stop()
 
 	for {
 		select {
@@ -43,14 +51,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		default:
 		}
 
-		jobs, err := w.Store.Claim(ctx, ClaimOptions{
-			WorkerID:      w.ID,
-			Queue:         w.Queue,
-			LeaseDuration: w.LeaseDuration,
-			Limit:         w.Concurrency,
-		})
-		if err != nil {
-			w.logger().Error("claim failed", "error", err)
+		var jobs []Job
+		if free := w.Concurrency - len(sem); free > 0 {
+			var err error
+			jobs, err = w.Store.Claim(ctx, ClaimOptions{
+				WorkerID:      w.ID,
+				Queue:         w.Queue,
+				LeaseDuration: w.LeaseDuration,
+				Limit:         free,
+			})
+			if err != nil {
+				w.logger().Error("claim failed", "error", err)
+			}
 		}
 
 		for _, job := range jobs {
@@ -69,6 +81,19 @@ func (w *Worker) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return w.drain(ctx, cancelExec, &wg)
+		case <-sweepTicker.C:
+			if count, err := w.Store.DeadLetterExhausted(ctx); err != nil {
+				w.logger().Error("dead-letter sweep failed", "error", err)
+			} else if count > 0 {
+				w.logger().Warn("dead-lettered jobs with expired leases and exhausted attempts", "count", count)
+			}
+			if w.RetentionPeriod > 0 {
+				if count, err := w.Store.PruneCompleted(ctx, w.RetentionPeriod); err != nil {
+					w.logger().Error("retention prune failed", "error", err)
+				} else if count > 0 {
+					w.logger().Info("pruned completed jobs", "count", count, "retention", w.RetentionPeriod)
+				}
+			}
 		case <-ticker.C:
 		}
 	}
@@ -86,8 +111,13 @@ func (w *Worker) drain(ctx context.Context, cancelExec context.CancelFunc, wg *s
 		w.logger().Info("worker drained")
 		return ctx.Err()
 	case <-time.After(w.ShutdownTimeout):
-		w.logger().Warn("worker drain timed out", "timeout", w.ShutdownTimeout)
+		w.logger().Warn("worker drain timed out, canceling in-flight jobs", "timeout", w.ShutdownTimeout)
 		cancelExec()
+		select {
+		case <-done:
+		case <-time.After(drainGrace):
+			w.logger().Warn("in-flight jobs did not stop after cancel", "grace", drainGrace)
+		}
 		return ctx.Err()
 	}
 }
@@ -102,21 +132,36 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 
 	heartbeatDone := make(chan struct{})
 	go func() {
-		t := time.NewTicker(heartbeatInterval(w.LeaseDuration))
+		interval := heartbeatInterval(w.LeaseDuration)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		defer close(heartbeatDone)
+		lastRenewed := time.Now()
 		for {
 			select {
 			case <-jobCtx.Done():
 				return
 			case <-t.C:
 				recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := w.Store.Heartbeat(recordCtx, job.ID, w.ID); err != nil {
-					w.logger().Warn("heartbeat failed", "job_id", job.ID, "error", err)
-				} else {
-					observability.JobHeartbeats.WithLabelValues(job.Queue).Inc()
-				}
+				err := w.Store.Heartbeat(recordCtx, job.ID, w.ID, w.LeaseDuration)
 				recordCancel()
+				switch {
+				case err == nil:
+					lastRenewed = time.Now()
+					observability.JobHeartbeats.WithLabelValues(job.Queue).Inc()
+				case errors.Is(err, ErrInvalidTransition):
+					w.logger().Warn("lease lost, canceling job", "job_id", job.ID)
+					cancel()
+					return
+				default:
+					w.logger().Warn("heartbeat failed", "job_id", job.ID, "error", err)
+					// Stop before the unrenewed lease expires; another worker may own the job after that.
+					if time.Since(lastRenewed) >= w.LeaseDuration-interval {
+						w.logger().Warn("lease presumed lost after failed heartbeats, canceling job", "job_id", job.ID)
+						cancel()
+						return
+					}
+				}
 			}
 		}
 	}()
