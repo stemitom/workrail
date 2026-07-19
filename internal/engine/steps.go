@@ -15,6 +15,13 @@ type stepRunner struct {
 	workerID string
 }
 
+type StepResult struct {
+	JobID     string          `json:"job_id"`
+	Name      string          `json:"name"`
+	Result    json.RawMessage `json:"result"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 // StepStore is the subset of Store that RunStep needs to checkpoint results.
 // SaveStep returns the persisted result: on a first-write-wins race the
 // winner's checkpoint comes back, not the caller's input.

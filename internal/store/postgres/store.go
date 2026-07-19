@@ -257,6 +257,26 @@ func (s *Store) SaveStep(ctx context.Context, jobID, workerID, stepName string, 
 	return stored, nil
 }
 
+func (s *Store) ListSteps(ctx context.Context, jobID string) ([]engine.StepResult, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT job_id, step_name, result, created_at
+		FROM job_steps WHERE job_id = $1 ORDER BY created_at, step_name
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var steps []engine.StepResult
+	for rows.Next() {
+		var step engine.StepResult
+		if err := rows.Scan(&step.JobID, &step.Name, &step.Result, &step.CreatedAt); err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+	}
+	return steps, rows.Err()
+}
+
 func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error {
 	tag, err := s.db.Exec(ctx, `
 		UPDATE jobs

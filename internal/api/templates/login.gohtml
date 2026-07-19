@@ -1,0 +1,12 @@
+{{define "content"}}
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="wordmark"><span class="dot"></span>Workrail</div>
+    {{if .Data}}<div class="login-error">{{.Data}}</div>{{end}}
+    <form method="post" action="/ui/login">
+      <input type="password" name="token" placeholder="API token" autofocus autocomplete="current-password">
+      <button class="btn btn-primary" type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+{{end}}

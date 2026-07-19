@@ -1,0 +1,39 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>{{if eq $d.Status "dead_letter"}}Dead letters{{else}}Jobs{{end}}</h1>
+<p class="subtitle">{{len $d.Jobs}} shown, newest first.</p>
+
+<form class="filters" method="get" action="/ui/jobs">
+  <input type="text" name="queue" placeholder="Queue" value="{{$d.Queue}}">
+  <select name="status">
+    <option value="">Any status</option>
+    {{range $d.Statuses}}
+    <option value="{{.}}" {{if eq $d.Status .}}selected{{end}}>{{statusLabel .}}</option>
+    {{end}}
+  </select>
+  <input type="text" name="type" placeholder="Workflow type" value="{{$d.Type}}">
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+<div class="card">
+  {{if $d.Jobs}}
+  <table>
+    <thead><tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead>
+    <tbody>
+      {{range $d.Jobs}}
+      <tr>
+        <td><a class="mono id-link" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
+        <td>{{.WorkflowType}}</td>
+        <td>{{.Queue}}</td>
+        <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
+        <td class="num">{{.Attempt}}/{{.MaxAttempts}}</td>
+        <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">No jobs match these filters.</div>
+  {{end}}
+</div>
+{{end}}

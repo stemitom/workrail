@@ -92,6 +92,10 @@ If `send-receipt` fails, the retry skips `charge-card` and returns its saved res
 
 Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries (`dlq retry` resumes; use `replay` for a genuinely fresh run), and are deleted with their job. Keep step names, and result types, stable while jobs are in flight — a renamed step re-runs, and a checkpoint that no longer decodes into the step's type fails the job. Results are stored as normalized `jsonb`; don't rely on byte-identical output. The built-in `sequence` workflow checkpoints each of its steps automatically and rejects duplicate step names.
 
+## Dashboard
+
+The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
+
 ## Security
 
 Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.

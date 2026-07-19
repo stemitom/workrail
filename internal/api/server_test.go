@@ -68,6 +68,16 @@ func TestNoAuthTokenDisablesAuth(t *testing.T) {
 
 type fakeStore struct{}
 
+func fakeJob() engine.Job {
+	errMsg := "boom"
+	return engine.Job{
+		ID: "0b81a3a2-9d9a-4a41-b9d3-000000000001", Queue: "emails", WorkflowType: "send_email",
+		Status: engine.StatusDeadLetter, Payload: json.RawMessage(`{"user":"u_1"}`),
+		Error: &errMsg, Attempt: 3, MaxAttempts: 3,
+		CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Minute),
+	}
+}
+
 func (s *fakeStore) Enqueue(context.Context, engine.EnqueueRequest) (engine.Job, bool, error) {
 	return engine.Job{}, false, nil
 }
@@ -86,6 +96,12 @@ func (s *fakeStore) DeadLetterExhausted(context.Context) (int, error) {
 
 func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, bool, error) {
 	return nil, false, nil
+}
+
+func (s *fakeStore) ListSteps(context.Context, string) ([]engine.StepResult, error) {
+	return []engine.StepResult{
+		{JobID: fakeJob().ID, Name: "compose", Result: json.RawMessage(`{"ok":true}`), CreatedAt: time.Now().Add(-2 * time.Minute)},
+	}, nil
 }
 
 func (s *fakeStore) SaveStep(_ context.Context, _, _, _ string, result json.RawMessage) (json.RawMessage, error) {
@@ -117,13 +133,21 @@ func (s *fakeStore) Replay(context.Context, string) (engine.Job, error) {
 }
 
 func (s *fakeStore) Get(context.Context, string) (engine.Job, []engine.Event, error) {
-	return engine.Job{}, nil, nil
+	events := []engine.Event{
+		{ID: 1, JobID: fakeJob().ID, EventType: "job.enqueued", Details: json.RawMessage(`{}`), CreatedAt: time.Now().Add(-time.Hour)},
+	}
+	return fakeJob(), events, nil
 }
 
 func (s *fakeStore) List(context.Context, engine.ListOptions) ([]engine.Job, error) {
-	return nil, nil
+	return []engine.Job{fakeJob()}, nil
 }
 
 func (s *fakeStore) QueueDepth(context.Context) ([]engine.QueueDepth, error) {
-	return nil, nil
+	return []engine.QueueDepth{
+		{Queue: "emails", Status: string(engine.StatusQueued), Count: 4},
+		{Queue: "emails", Status: string(engine.StatusRunning), Count: 2},
+		{Queue: "emails", Status: string(engine.StatusDeadLetter), Count: 1},
+		{Queue: "billing", Status: string(engine.StatusSucceeded), Count: 12},
+	}, nil
 }

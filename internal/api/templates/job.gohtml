@@ -1,0 +1,86 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$job := $d.Job}}
+<div class="page-head">
+  <div>
+    <h1>{{$job.WorkflowType}} <span class="pill {{statusClass $job.Status}}"><span class="sdot"></span>{{statusLabel $job.Status}}</span></h1>
+    <p class="subtitle mono">{{$job.ID}}</p>
+  </div>
+  <div class="actions">
+    {{if $d.CanRetry}}
+    <form method="post" action="/ui/jobs/{{$job.ID}}/retry"><button class="btn" type="submit">Retry</button></form>
+    {{end}}
+    <form method="post" action="/ui/jobs/{{$job.ID}}/replay"><button class="btn" type="submit">Replay</button></form>
+    {{if $d.CanCancel}}
+    <form method="post" action="/ui/jobs/{{$job.ID}}/cancel"><button class="btn btn-danger" type="submit">Cancel</button></form>
+    {{end}}
+  </div>
+</div>
+
+{{if $job.Error}}
+<div class="callout"><span class="k">Error</span>{{$job.Error}}</div>
+{{end}}
+
+<section>
+  <div class="card meta-grid">
+    <div class="meta-cell"><div class="k">Queue</div><div class="v">{{$job.Queue}}</div></div>
+    <div class="meta-cell"><div class="k">Attempts</div><div class="v">{{$job.Attempt}} of {{$job.MaxAttempts}}</div></div>
+    <div class="meta-cell"><div class="k">Created</div><div class="v" title="{{rfc3339 $job.CreatedAt}}">{{timeago $job.CreatedAt}}</div></div>
+    <div class="meta-cell"><div class="k">Updated</div><div class="v" title="{{rfc3339 $job.UpdatedAt}}">{{timeago $job.UpdatedAt}}</div></div>
+    {{if $job.LeaseOwner}}<div class="meta-cell"><div class="k">Worker</div><div class="v">{{$job.LeaseOwner}}</div></div>{{end}}
+    {{if $job.IdempotencyKey}}<div class="meta-cell"><div class="k">Idempotency key</div><div class="v mono">{{$job.IdempotencyKey}}</div></div>{{end}}
+  </div>
+</section>
+
+{{if $d.Steps}}
+<section>
+  <h2>Steps</h2>
+  <div class="card">
+    {{range $d.Steps}}
+    <div class="step-row">
+      <span class="step-check">✓</span>
+      <div class="step-body">
+        <span class="step-name">{{.Name}}</span>
+        <details><summary>Result</summary><pre class="json">{{prettyJSON .Result}}</pre></details>
+      </div>
+      <span class="step-when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</span>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+<section>
+  <h2>Payload</h2>
+  <div class="card"><pre class="json">{{prettyJSON $job.Payload}}</pre></div>
+</section>
+
+{{if $job.Result}}
+<section>
+  <h2>Result</h2>
+  <div class="card"><pre class="json">{{prettyJSON $job.Result}}</pre></div>
+</section>
+{{end}}
+
+<section>
+  <h2>History</h2>
+  <div class="card">
+    {{if $d.Events}}
+    <table>
+      <thead><tr><th>Event</th><th>Details</th><th>When</th></tr></thead>
+      <tbody>
+        {{range $d.Events}}
+        <tr>
+          <td>{{.EventType}}</td>
+          <td class="mono">{{compactJSON .Details}}</td>
+          <td class="when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">No events recorded.</div>
+    {{end}}
+  </div>
+</section>
+{{end}}

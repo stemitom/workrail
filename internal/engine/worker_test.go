@@ -211,6 +211,10 @@ func (s *workerTestStore) DeadLetterExhausted(context.Context) (int, error) {
 	return 0, nil
 }
 
+func (s *workerTestStore) ListSteps(context.Context, string) ([]StepResult, error) {
+	return nil, nil
+}
+
 func (s *workerTestStore) GetStep(_ context.Context, jobID, stepName string) (json.RawMessage, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

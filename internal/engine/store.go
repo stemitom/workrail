@@ -10,6 +10,7 @@ type Store interface {
 	Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error)
 	Claim(ctx context.Context, opts ClaimOptions) ([]Job, error)
 	Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error
+	ListSteps(ctx context.Context, jobID string) ([]StepResult, error)
 	DeadLetterExhausted(ctx context.Context) (int, error)
 	PruneCompleted(ctx context.Context, queue string, olderThan time.Duration) (int, error)
 	Complete(ctx context.Context, jobID, workerID string, result []byte) error

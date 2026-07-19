@@ -1,0 +1,65 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Overview</h1>
+<p class="subtitle">Queues and recent activity, refreshed every 10 seconds.</p>
+
+<section class="tiles">
+  {{range $d.Tiles}}
+  <div class="tile">
+    <div class="label"><span class="sdot {{.Class}}"></span>{{.Label}}</div>
+    <div class="value">{{.Count}}</div>
+  </div>
+  {{end}}
+</section>
+
+<section>
+  <h2>Queues</h2>
+  <div class="card">
+    {{if $d.Queues}}
+      {{range $d.Queues}}
+      <div class="queue-row">
+        <div class="queue-head">
+          <span class="queue-name">{{.Name}}</span>
+          <span class="queue-total">{{.Total}} total</span>
+        </div>
+        {{if .Segments}}
+        <div class="depth-bar">
+          {{range .Segments}}<span class="{{.Class}}" style="flex: {{.Count}}" title="{{.Count}} {{.Label}}"></span>{{end}}
+        </div>
+        {{end}}
+        <div class="queue-counts">
+          {{range .Counts}}<span><span class="sdot {{.Class}}"></span>{{.Count}} {{.Label}}</span>{{end}}
+        </div>
+      </div>
+      {{end}}
+    {{else}}
+    <div class="empty">No jobs yet. Enqueue one with <span class="mono">workrail enqueue</span>.</div>
+    {{end}}
+  </div>
+</section>
+
+<section>
+  <h2>Recent jobs</h2>
+  <div class="card">
+    {{if $d.Jobs}}
+    <table>
+      <thead><tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range $d.Jobs}}
+        <tr>
+          <td><a class="mono id-link" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
+          <td>{{.WorkflowType}}</td>
+          <td>{{.Queue}}</td>
+          <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
+          <td class="num">{{.Attempt}}/{{.MaxAttempts}}</td>
+          <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">Nothing here yet.</div>
+    {{end}}
+  </div>
+</section>
+{{end}}
