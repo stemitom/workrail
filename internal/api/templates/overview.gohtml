@@ -42,21 +42,7 @@
   <h2>Recent jobs</h2>
   <div class="card">
     {{if $d.Jobs}}
-    <table>
-      <thead><tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead>
-      <tbody>
-        {{range $d.Jobs}}
-        <tr>
-          <td><a class="mono id-link" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
-          <td>{{.WorkflowType}}</td>
-          <td>{{.Queue}}</td>
-          <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
-          <td class="num">{{.Attempt}}/{{.MaxAttempts}}</td>
-          <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+    {{template "jobtable" $d.Jobs}}
     {{else}}
     <div class="empty">Nothing here yet.</div>
     {{end}}

@@ -90,7 +90,6 @@ h2 { font-size: 13px; font-weight: 550; color: var(--ink-2); margin-bottom: 10px
 .queue-total { color: var(--ink-3); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .depth-bar { display: flex; gap: 2px; height: 6px; border-radius: 3px; }
 .depth-bar span { border-radius: 3px; min-width: 4px; background: var(--c); }
-.depth-bar .rest { flex: 1; background: color-mix(in srgb, var(--ink) 6%, transparent); min-width: 0; }
 .queue-counts { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 9px; color: var(--ink-2); font-size: 12.5px; }
 .queue-counts span { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
@@ -174,7 +173,7 @@ pre.json {
 </style>
 </head>
 <body>
-{{if .ShowChrome}}
+{{if not .Chromeless}}
 <header>
   <div class="bar">
     <a class="wordmark" href="/ui"><span class="dot"></span>Workrail</a>
@@ -194,3 +193,21 @@ pre.json {
 </main>
 </body>
 </html>
+
+{{define "jobtable"}}
+<table>
+  <thead><tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead>
+  <tbody>
+    {{range .}}
+    <tr>
+      <td><a class="mono id-link" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
+      <td>{{.WorkflowType}}</td>
+      <td>{{.Queue}}</td>
+      <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
+      <td class="num">{{.Attempt}}/{{.MaxAttempts}}</td>
+      <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

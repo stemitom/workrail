@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -18,11 +19,12 @@ import (
 )
 
 type Server struct {
-	store     engine.Store
-	logger    *slog.Logger
-	mux       *http.ServeMux
-	authToken []byte
-	templates map[string]*template.Template
+	store       engine.Store
+	logger      *slog.Logger
+	mux         *http.ServeMux
+	authToken   []byte
+	templates   map[string]*template.Template
+	loginLimits loginLimiter
 }
 
 func New(store engine.Store, logger *slog.Logger, authToken string) *Server {
@@ -49,6 +51,12 @@ func (s *Server) Handler() http.Handler {
 // the session cookie; everything else requires the bearer token.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Defense in depth beyond SameSite: dashboard POSTs must come from
+		// this host, so a same-site sibling app cannot forge actions.
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/ui") && !sameOrigin(r) {
+			writeError(w, http.StatusForbidden, errors.New("cross-origin request rejected"))
+			return
+		}
 		if len(s.authToken) == 0 || r.URL.Path == "/healthz" || r.URL.Path == "/ui/login" {
 			next.ServeHTTP(w, r)
 			return
@@ -178,6 +186,18 @@ func (s *Server) retryDeadLetter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func sameOrigin(r *http.Request) bool {
+	source := r.Header.Get("Origin")
+	if source == "" {
+		source = r.Header.Get("Referer")
+	}
+	if source == "" {
+		return true
+	}
+	u, err := url.Parse(source)
+	return err == nil && u.Host == r.Host
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

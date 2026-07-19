@@ -173,7 +173,12 @@ func HTTPMetrics(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		route := r.URL.Path
+		// The matched mux pattern keeps label cardinality bounded; the raw
+		// path would mint one series per job UUID.
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
 		HTTPRequests.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
 		HTTPRequestDuration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
 	})

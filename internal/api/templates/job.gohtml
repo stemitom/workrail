@@ -17,8 +17,8 @@
   </div>
 </div>
 
-{{if $job.Error}}
-<div class="callout"><span class="k">Error</span>{{$job.Error}}</div>
+{{with deref $job.Error}}
+<div class="callout"><span class="k">Error</span>{{.}}</div>
 {{end}}
 
 <section>

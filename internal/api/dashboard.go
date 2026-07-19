@@ -2,12 +2,18 @@ package api
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/stemitom/workrail/internal/engine"
@@ -18,9 +24,58 @@ var templateFS embed.FS
 
 const sessionCookie = "workrail_session"
 
+// sessionValue derives the cookie value from the auth token with HMAC, so the
+// cookie never carries the API credential itself: a leaked cookie grants
+// dashboard access until the token rotates, but cannot be replayed as a
+// bearer token, and the hex digest is always cookie-safe.
+func sessionValue(authToken []byte) string {
+	mac := hmac.New(sha256.New, authToken)
+	mac.Write([]byte("workrail-session-v1"))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// loginLimiter bounds failed sign-in attempts so the exempt /ui/login POST is
+// not an unthrottled oracle for brute-forcing the token.
+type loginLimiter struct {
+	mu       sync.Mutex
+	failures int
+	windowAt time.Time
+}
+
+const (
+	loginFailureLimit  = 10
+	loginFailureWindow = time.Minute
+)
+
+func (l *loginLimiter) allow() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if time.Since(l.windowAt) > loginFailureWindow {
+		l.failures = 0
+		l.windowAt = time.Now()
+	}
+	return l.failures < loginFailureLimit
+}
+
+func (l *loginLimiter) recordFailure() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if time.Since(l.windowAt) > loginFailureWindow {
+		l.failures = 0
+		l.windowAt = time.Now()
+	}
+	l.failures++
+}
+
+// requestIsSecure reports whether the client connection used TLS, directly or
+// via a reverse proxy that sets X-Forwarded-Proto.
+func requestIsSecure(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 var dashboardStatuses = []engine.Status{
 	engine.StatusQueued, engine.StatusRunning, engine.StatusRetrying,
-	engine.StatusSucceeded, engine.StatusDeadLetter, engine.StatusCanceled,
+	engine.StatusSucceeded, engine.StatusFailed, engine.StatusDeadLetter, engine.StatusCanceled,
 }
 
 // liveStatuses are the states drawn as depth-bar segments; terminal bulk
@@ -34,14 +89,25 @@ var templateFuncs = template.FuncMap{
 	"statusClass": statusClass,
 	"statusLabel": statusLabel,
 	"timeago":     timeago,
-	"rfc3339":     func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
+	"rfc3339": func(t time.Time) string {
+		if t.IsZero() {
+			return "—"
+		}
+		return t.UTC().Format(time.RFC3339)
+	},
+	"deref": func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	},
 	"prettyJSON":  prettyJSON,
 	"compactJSON": compactJSON,
 }
 
 func parseTemplates() map[string]*template.Template {
 	pages := map[string]*template.Template{}
-	for _, page := range []string{"overview", "jobs", "job", "login"} {
+	for _, page := range []string{"overview", "jobs", "job", "login", "error"} {
 		pages[page] = template.Must(template.New("layout.gohtml").Funcs(templateFuncs).
 			ParseFS(templateFS, "templates/layout.gohtml", "templates/"+page+".gohtml"))
 	}
@@ -51,13 +117,13 @@ func parseTemplates() map[string]*template.Template {
 type view struct {
 	Title       string
 	Page        string
-	ShowChrome  bool
+	Chromeless  bool
 	AuthEnabled bool
 	Refresh     bool
 	Data        any
 }
 
-func (s *Server) render(w http.ResponseWriter, page string, v view) {
+func (s *Server) render(w http.ResponseWriter, page string, status int, v view) {
 	v.AuthEnabled = len(s.authToken) > 0
 	var buf bytes.Buffer
 	if err := s.templates[page].Execute(&buf, v); err != nil {
@@ -66,7 +132,22 @@ func (s *Server) render(w http.ResponseWriter, page string, v view) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = buf.WriteTo(w)
+}
+
+func (s *Server) uiStoreError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	message := "Something went wrong. Check the server logs."
+	switch {
+	case errors.Is(err, engine.ErrNotFound):
+		status, message = http.StatusNotFound, "That job doesn't exist."
+	case errors.Is(err, engine.ErrInvalidTransition):
+		status, message = http.StatusConflict, "The job changed state underneath this action. Go back and refresh."
+	case errors.Is(err, engine.ErrInvalidStatus):
+		status, message = http.StatusBadRequest, "That status filter isn't valid."
+	}
+	s.render(w, "error", status, view{Title: "Error", Page: "", Data: message})
 }
 
 type overviewData struct {
@@ -99,8 +180,8 @@ func (s *Server) uiOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "overview", view{
-		Title: "Overview", Page: "overview", ShowChrome: true, Refresh: true,
+	s.render(w, "overview", http.StatusOK, view{
+		Title: "Overview", Page: "overview", Refresh: true,
 		Data: buildOverview(depths, jobs),
 	})
 }
@@ -155,7 +236,7 @@ func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	status := engine.Status(q.Get("status"))
 	if !engine.IsValidStatus(status) {
-		http.Error(w, "invalid status", http.StatusBadRequest)
+		s.uiStoreError(w, engine.ErrInvalidStatus)
 		return
 	}
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
@@ -165,15 +246,15 @@ func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 		WorkflowType: q.Get("type"),
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.uiStoreError(w, err)
 		return
 	}
 	page := "jobs"
 	if status == engine.StatusDeadLetter {
 		page = "dlq"
 	}
-	s.render(w, "jobs", view{
-		Title: "Jobs", Page: page, ShowChrome: true, Refresh: true,
+	s.render(w, "jobs", http.StatusOK, view{
+		Title: "Jobs", Page: page,
 		Data: jobsData{Jobs: jobs, Queue: q.Get("queue"), Status: status, Type: q.Get("type"), Statuses: dashboardStatuses},
 	})
 }
@@ -189,16 +270,16 @@ type jobData struct {
 func (s *Server) uiJob(w http.ResponseWriter, r *http.Request) {
 	job, events, err := s.store.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeStoreError(w, err)
+		s.uiStoreError(w, err)
 		return
 	}
 	steps, err := s.store.ListSteps(r.Context(), job.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.uiStoreError(w, err)
 		return
 	}
-	s.render(w, "job", view{
-		Title: job.WorkflowType, Page: "jobs", ShowChrome: true,
+	s.render(w, "job", http.StatusOK, view{
+		Title: job.WorkflowType, Page: "jobs",
 		Data: jobData{
 			Job:       job,
 			Events:    events,
@@ -212,7 +293,7 @@ func (s *Server) uiJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) uiRetry(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.store.RetryDeadLetter(r.Context(), id); err != nil {
-		writeStoreError(w, err)
+		s.uiStoreError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/ui/jobs/"+id, http.StatusSeeOther)
@@ -221,7 +302,7 @@ func (s *Server) uiRetry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) uiCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.store.Cancel(r.Context(), id); err != nil {
-		writeStoreError(w, err)
+		s.uiStoreError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/ui/jobs/"+id, http.StatusSeeOther)
@@ -230,7 +311,7 @@ func (s *Server) uiCancel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) uiReplay(w http.ResponseWriter, r *http.Request) {
 	job, err := s.store.Replay(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeStoreError(w, err)
+		s.uiStoreError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/ui/jobs/"+job.ID, http.StatusSeeOther)
@@ -241,7 +322,7 @@ func (s *Server) uiLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui", http.StatusSeeOther)
 		return
 	}
-	s.render(w, "login", view{Title: "Sign in", Page: "login"})
+	s.render(w, "login", http.StatusOK, view{Title: "Sign in", Page: "login", Chromeless: true})
 }
 
 func (s *Server) uiLogin(w http.ResponseWriter, r *http.Request) {
@@ -249,15 +330,25 @@ func (s *Server) uiLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !s.loginLimits.allow() {
+		s.render(w, "login", http.StatusTooManyRequests, view{
+			Title: "Sign in", Page: "login", Chromeless: true,
+			Data: "Too many attempts. Try again in a minute.",
+		})
+		return
+	}
 	token := r.PostFormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), s.authToken) != 1 {
-		w.WriteHeader(http.StatusUnauthorized)
-		s.render(w, "login", view{Title: "Sign in", Page: "login", Data: "That token didn't match."})
+		s.loginLimits.recordFailure()
+		s.render(w, "login", http.StatusUnauthorized, view{
+			Title: "Sign in", Page: "login", Chromeless: true,
+			Data: "That token didn't match.",
+		})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Name: sessionCookie, Value: sessionValue(s.authToken), Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: requestIsSecure(r),
 	})
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
@@ -265,14 +356,14 @@ func (s *Server) uiLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) uiLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: requestIsSecure(r),
 	})
 	http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
 }
 
 func (s *Server) hasSession(r *http.Request) bool {
 	cookie, err := r.Cookie(sessionCookie)
-	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), s.authToken) == 1
+	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(sessionValue(s.authToken))) == 1
 }
 
 func shortID(id string) string {

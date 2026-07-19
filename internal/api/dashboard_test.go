@@ -83,6 +83,9 @@ func TestDashboardAuthFlow(t *testing.T) {
 	if session == nil || !session.HttpOnly {
 		t.Fatalf("login must set an HttpOnly session cookie, got %+v", resp.Cookies())
 	}
+	if session.Value == "secret" {
+		t.Fatal("session cookie must not store the raw API token")
+	}
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/ui", nil)
 	req.AddCookie(session)
@@ -105,6 +108,42 @@ func TestDashboardAuthFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("cookie on API path: status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	server := New(&fakeStore{}, slog.Default(), "secret")
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var last int
+	for range loginFailureLimit + 1 {
+		resp, err := ts.Client().PostForm(ts.URL+"/ui/login", url.Values{"token": {"wrong"}})
+		if err != nil {
+			t.Fatalf("login attempt: %v", err)
+		}
+		resp.Body.Close()
+		last = resp.StatusCode
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("attempt %d status = %d, want 429", loginFailureLimit+1, last)
+	}
+}
+
+func TestDashboardPostRejectsCrossOrigin(t *testing.T) {
+	server := New(&fakeStore{}, slog.Default(), "secret")
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/ui/jobs/abc/cancel", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin POST status = %d, want 403", resp.StatusCode)
 	}
 }
 
