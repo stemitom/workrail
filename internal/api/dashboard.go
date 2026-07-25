@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +121,6 @@ type view struct {
 	Page        string
 	Chromeless  bool
 	AuthEnabled bool
-	Refresh     bool
 	Data        any
 }
 
@@ -181,7 +182,7 @@ func (s *Server) uiOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "overview", http.StatusOK, view{
-		Title: "Overview", Page: "overview", Refresh: true,
+		Title: "Overview", Page: "overview",
 		Data: buildOverview(depths, jobs),
 	})
 }
@@ -225,12 +226,16 @@ func buildOverview(depths []engine.QueueDepth, jobs []engine.Job) overviewData {
 }
 
 type jobsData struct {
-	Jobs     []engine.Job
-	Queue    string
-	Status   engine.Status
-	Type     string
-	Statuses []engine.Status
+	Jobs      []engine.Job
+	Queue     string
+	Status    engine.Status
+	Type      string
+	Statuses  []engine.Status
+	OlderURL  string
+	LatestURL string
 }
+
+const uiJobsLimit = 100
 
 func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -239,11 +244,18 @@ func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 		s.uiStoreError(w, engine.ErrInvalidStatus)
 		return
 	}
+	before, beforeID, err := parseCursor(q)
+	if err != nil {
+		s.render(w, "error", http.StatusBadRequest, view{Title: "Error", Data: "That page cursor isn't valid."})
+		return
+	}
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
-		Limit:        100,
-		Queue:        q.Get("queue"),
-		Status:       status,
-		WorkflowType: q.Get("type"),
+		Limit:           uiJobsLimit,
+		Queue:           q.Get("queue"),
+		Status:          status,
+		WorkflowType:    q.Get("type"),
+		BeforeCreatedAt: before,
+		BeforeID:        beforeID,
 	})
 	if err != nil {
 		s.uiStoreError(w, err)
@@ -253,10 +265,28 @@ func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 	if status == engine.StatusDeadLetter {
 		page = "dlq"
 	}
-	s.render(w, "jobs", http.StatusOK, view{
-		Title: "Jobs", Page: page,
-		Data: jobsData{Jobs: jobs, Queue: q.Get("queue"), Status: status, Type: q.Get("type"), Statuses: dashboardStatuses},
-	})
+	filters := url.Values{}
+	for _, key := range []string{"queue", "status", "type"} {
+		if q.Get(key) != "" {
+			filters.Set(key, q.Get(key))
+		}
+	}
+	data := jobsData{Jobs: jobs, Queue: q.Get("queue"), Status: status, Type: q.Get("type"), Statuses: dashboardStatuses}
+	if len(jobs) == uiJobsLimit {
+		last := jobs[len(jobs)-1]
+		older := url.Values{}
+		maps.Copy(older, filters)
+		older.Set("before", last.CreatedAt.UTC().Format(time.RFC3339Nano))
+		older.Set("before_id", last.ID)
+		data.OlderURL = "/ui/jobs?" + older.Encode()
+	}
+	if !before.IsZero() {
+		data.LatestURL = "/ui/jobs"
+		if len(filters) > 0 {
+			data.LatestURL += "?" + filters.Encode()
+		}
+	}
+	s.render(w, "jobs", http.StatusOK, view{Title: "Jobs", Page: page, Data: data})
 }
 
 type jobData struct {

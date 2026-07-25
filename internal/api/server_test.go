@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,9 @@ func TestNoAuthTokenDisablesAuth(t *testing.T) {
 	}
 }
 
-type fakeStore struct{}
+type fakeStore struct {
+	listCount int
+}
 
 func fakeJob() engine.Job {
 	errMsg := "boom"
@@ -140,7 +143,13 @@ func (s *fakeStore) Get(context.Context, string) (engine.Job, []engine.Event, er
 }
 
 func (s *fakeStore) List(context.Context, engine.ListOptions) ([]engine.Job, error) {
-	return []engine.Job{fakeJob()}, nil
+	jobs := []engine.Job{fakeJob()}
+	for i := 1; i < s.listCount; i++ {
+		job := fakeJob()
+		job.ID = fmt.Sprintf("0b81a3a2-9d9a-4a41-b9d3-%012d", i)
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
 }
 
 func (s *fakeStore) QueueDepth(context.Context) ([]engine.QueueDepth, error) {

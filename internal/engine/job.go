@@ -72,6 +72,10 @@ type ListOptions struct {
 	Queue        string
 	Status       Status
 	WorkflowType string
+	// BeforeCreatedAt/BeforeID form a keyset cursor: only jobs strictly older
+	// than (created_at, id) are returned. Both must be set together.
+	BeforeCreatedAt time.Time
+	BeforeID        string
 }
 
 var (

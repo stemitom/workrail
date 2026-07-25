@@ -111,6 +111,39 @@ func TestDashboardAuthFlow(t *testing.T) {
 	}
 }
 
+func TestJobsPagination(t *testing.T) {
+	server := New(&fakeStore{listCount: uiJobsLimit}, slog.Default(), "")
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/ui/jobs?queue=emails")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "Older") || !strings.Contains(body, "before=") || !strings.Contains(body, "queue=emails") {
+		t.Fatalf("full page must offer an Older link preserving filters")
+	}
+
+	resp, err = ts.Client().Get(ts.URL + "/ui/jobs?before=2026-07-01T00%3A00%3A00Z&before_id=abc")
+	if err != nil {
+		t.Fatalf("get older page: %v", err)
+	}
+	body = readBody(t, resp)
+	if !strings.Contains(body, "Latest") {
+		t.Fatal("cursored page must offer a Latest link")
+	}
+
+	resp, err = ts.Client().Get(ts.URL + "/ui/jobs?before=not-a-time")
+	if err != nil {
+		t.Fatalf("get bad cursor: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad cursor status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	server := New(&fakeStore{}, slog.Default(), "secret")
 	ts := httptest.NewServer(server.Handler())

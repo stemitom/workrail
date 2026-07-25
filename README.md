@@ -94,7 +94,7 @@ Step results persist in `job_steps`, appear as `job.step_completed` events in `w
 
 ## Dashboard
 
-The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
+The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
 
 ## Security
 

@@ -360,6 +360,52 @@ func TestIntegrationExhaustedExpiredLeaseDeadLetters(t *testing.T) {
 	}
 }
 
+func TestIntegrationListKeysetPagination(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	var ids []string
+	for i := range 3 {
+		job, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+			WorkflowType: "echo",
+			Payload:      []byte(`{}`),
+			RunAfter:     time.Now().UTC().Add(time.Duration(i) * time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+		ids = append(ids, job.ID)
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	first, err := store.List(ctx, engine.ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first) != 2 || first[0].ID != ids[2] || first[1].ID != ids[1] {
+		t.Fatalf("first page = %v, want newest two", jobIDs(first))
+	}
+
+	second, err := store.List(ctx, engine.ListOptions{
+		Limit:           2,
+		BeforeCreatedAt: first[1].CreatedAt,
+		BeforeID:        first[1].ID,
+	})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second) != 1 || second[0].ID != ids[0] {
+		t.Fatalf("second page = %v, want only the oldest job", jobIDs(second))
+	}
+}
+
+func jobIDs(jobs []engine.Job) []string {
+	ids := make([]string, len(jobs))
+	for i, job := range jobs {
+		ids[i] = job.ID
+	}
+	return ids
+}
+
 func TestIntegrationCancelAndReplay(t *testing.T) {
 	store, ctx := integrationStore(t)
 

@@ -1,9 +1,9 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Overview</h1>
-<p class="subtitle">Queues and recent activity, refreshed every 10 seconds.</p>
+<p class="subtitle">Queues and recent activity, updating live.</p>
 
-<section class="tiles">
+<section class="tiles" data-poll="tiles">
   {{range $d.Tiles}}
   <div class="tile">
     <div class="label"><span class="sdot {{.Class}}"></span>{{.Label}}</div>
@@ -14,7 +14,7 @@
 
 <section>
   <h2>Queues</h2>
-  <div class="card">
+  <div class="card" data-poll="queues">
     {{if $d.Queues}}
       {{range $d.Queues}}
       <div class="queue-row">
@@ -40,7 +40,7 @@
 
 <section>
   <h2>Recent jobs</h2>
-  <div class="card">
+  <div class="card" data-poll="recent">
     {{if $d.Jobs}}
     {{template "jobtable" $d.Jobs}}
     {{else}}

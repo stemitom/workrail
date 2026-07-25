@@ -4,12 +4,14 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/stemitom/workrail/internal/engine"
 	"github.com/stemitom/workrail/internal/observability"
@@ -125,17 +127,37 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	before, beforeID, err := parseCursor(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
-		Limit:        limit,
-		Queue:        r.URL.Query().Get("queue"),
-		Status:       engine.Status(r.URL.Query().Get("status")),
-		WorkflowType: r.URL.Query().Get("type"),
+		Limit:           limit,
+		Queue:           r.URL.Query().Get("queue"),
+		Status:          engine.Status(r.URL.Query().Get("status")),
+		WorkflowType:    r.URL.Query().Get("type"),
+		BeforeCreatedAt: before,
+		BeforeID:        beforeID,
 	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+// parseCursor reads the keyset pagination cursor from before/before_id params.
+func parseCursor(q url.Values) (time.Time, string, error) {
+	value := q.Get("before")
+	if value == "" {
+		return time.Time{}, "", nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("invalid before cursor: %w", err)
+	}
+	return at, q.Get("before_id"), nil
 }
 
 func (s *Server) deadLetters(w http.ResponseWriter, r *http.Request) {

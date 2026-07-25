@@ -417,6 +417,10 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 	if !engine.IsValidStatus(opts.Status) {
 		return nil, engine.ErrInvalidStatus
 	}
+	var beforeAt, beforeID any
+	if !opts.BeforeCreatedAt.IsZero() && opts.BeforeID != "" {
+		beforeAt, beforeID = opts.BeforeCreatedAt, opts.BeforeID
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
 			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
@@ -424,9 +428,10 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 		WHERE ($2 = '' OR queue = $2)
 			AND ($3 = '' OR status = $3::job_status)
 			AND ($4 = '' OR workflow_type = $4)
-		ORDER BY created_at DESC
+			AND ($5::timestamptz IS NULL OR (created_at, id) < ($5::timestamptz, $6::uuid))
+		ORDER BY created_at DESC, id DESC
 		LIMIT $1
-	`, opts.Limit, opts.Queue, string(opts.Status), opts.WorkflowType)
+	`, opts.Limit, opts.Queue, string(opts.Status), opts.WorkflowType, beforeAt, beforeID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>{{if eq $d.Status "dead_letter"}}Dead letters{{else}}Jobs{{end}}</h1>
-<p class="subtitle">{{len $d.Jobs}} shown, newest first.</p>
+<p class="subtitle" data-poll="count">{{len $d.Jobs}} shown, newest first, updating live.</p>
 
 <form class="filters" method="get" action="/ui/jobs">
   <input type="text" name="queue" placeholder="Queue" value="{{$d.Queue}}">
@@ -15,11 +15,19 @@
   <button class="btn" type="submit">Filter</button>
 </form>
 
-<div class="card">
+<div class="card" data-poll="jobs">
   {{if $d.Jobs}}
   {{template "jobtable" $d.Jobs}}
   {{else}}
   <div class="empty">No jobs match these filters.</div>
   {{end}}
 </div>
+
+{{if or $d.LatestURL $d.OlderURL}}
+<div class="pager">
+  {{if $d.LatestURL}}<a class="btn" href="{{$d.LatestURL}}">← Latest</a>{{end}}
+  <span class="spacer"></span>
+  {{if $d.OlderURL}}<a class="btn" href="{{$d.OlderURL}}">Older →</a>{{end}}
+</div>
+{{end}}
 {{end}}

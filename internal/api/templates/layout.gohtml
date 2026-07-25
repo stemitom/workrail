@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} — Workrail</title>
-{{if .Refresh}}<meta http-equiv="refresh" content="10">{{end}}
 <style>
 :root {
   color-scheme: light;
@@ -158,6 +157,8 @@ pre.json {
 .step-row summary { color: var(--ink-3); font-size: 12.5px; cursor: pointer; }
 .step-row pre.json { padding: 8px 0 0; }
 .empty { padding: 26px 18px; color: var(--ink-3); font-size: 13.5px; text-align: center; }
+.pager { display: flex; justify-content: space-between; margin-top: 14px; }
+.pager .spacer { flex: 1; }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
 .page-head .subtitle { margin-bottom: 0; margin-top: 4px; }
 .login-wrap { min-height: 70vh; display: flex; align-items: center; justify-content: center; }
@@ -191,6 +192,26 @@ pre.json {
 <main>
 {{template "content" .}}
 </main>
+<script>
+(function () {
+  var regions = document.querySelectorAll("[data-poll]");
+  if (!regions.length) return;
+  setInterval(function () {
+    if (document.hidden) return;
+    fetch(location.href, { cache: "no-store" }).then(function (res) {
+      if (!res.ok) return null;
+      return res.text();
+    }).then(function (html) {
+      if (!html) return;
+      var doc = new DOMParser().parseFromString(html, "text/html");
+      regions.forEach(function (region) {
+        var fresh = doc.querySelector('[data-poll="' + region.dataset.poll + '"]');
+        if (fresh) region.replaceChildren.apply(region, Array.prototype.slice.call(fresh.childNodes));
+      });
+    }).catch(function () {});
+  }, 5000);
+})();
+</script>
 </body>
 </html>
 
