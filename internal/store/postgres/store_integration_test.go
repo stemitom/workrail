@@ -636,3 +636,92 @@ func TestIntegrationPermanentFailureSkipsRetries(t *testing.T) {
 		t.Fatal("no job.failed event recorded")
 	}
 }
+
+func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "approval",
+		Payload:      []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":false}`)); err != nil {
+		t.Fatalf("second signal: %v", err)
+	}
+	payload, found, err := store.GetSignal(ctx, enqueued.ID, "approval")
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	var delivered struct {
+		OK bool `json:"ok"`
+	}
+	if !found || json.Unmarshal(payload, &delivered) != nil || !delivered.OK {
+		t.Fatalf("payload = %s, found = %v, want earliest delivery", payload, found)
+	}
+	if _, found, err := store.GetSignal(ctx, enqueued.ID, "other"); err != nil || found {
+		t.Fatalf("unknown signal found = %v, err = %v, want miss", found, err)
+	}
+
+	// Terminal jobs reject signals: nobody is waiting anymore.
+	if err := store.Complete(ctx, enqueued.ID, "worker-a", []byte(`{}`)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{}`)); !errors.Is(err, engine.ErrInvalidTransition) {
+		t.Fatalf("signal to finished job = %v, want ErrInvalidTransition", err)
+	}
+
+	_, events, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var signaled bool
+	for _, event := range events {
+		if event.EventType == "job.signaled" {
+			signaled = true
+		}
+	}
+	if !signaled {
+		t.Fatal("no job.signaled event recorded")
+	}
+
+	for _, terminal := range []struct {
+		name   string
+		finish func(ctx context.Context, store *Store, job engine.Job) error
+	}{
+		{"canceled", func(ctx context.Context, store *Store, job engine.Job) error {
+			return store.Cancel(ctx, job.ID)
+		}},
+		{"dead_letter", func(ctx context.Context, store *Store, job engine.Job) error {
+			if _, err := store.Claim(ctx, engine.ClaimOptions{WorkerID: "worker-a", LeaseDuration: time.Minute, Limit: 1}); err != nil {
+				return err
+			}
+			return store.Fail(ctx, job.ID, "worker-a", errors.New("boom"))
+		}},
+	} {
+		t.Run(terminal.name, func(t *testing.T) {
+			job, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "approval", MaxAttempts: 1})
+			if err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			if err := terminal.finish(ctx, store, job); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			if err := store.Signal(ctx, job.ID, "approval", []byte(`{}`)); !errors.Is(err, engine.ErrInvalidTransition) {
+				t.Fatalf("signal to %s job = %v, want ErrInvalidTransition", terminal.name, err)
+			}
+		})
+	}
+}

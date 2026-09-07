@@ -28,6 +28,8 @@ type StepResult struct {
 type StepStore interface {
 	GetStep(ctx context.Context, jobID, stepName string) (json.RawMessage, bool, error)
 	SaveStep(ctx context.Context, jobID, workerID, stepName string, result json.RawMessage) (json.RawMessage, error)
+	// GetSignal returns the earliest signal delivered to jobID under name.
+	GetSignal(ctx context.Context, jobID, name string) (json.RawMessage, bool, error)
 }
 
 func WithStepRunner(ctx context.Context, store StepStore, jobID, workerID string) context.Context {

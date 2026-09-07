@@ -139,6 +139,26 @@ func (c *Client) Cancel(ctx context.Context, jobID string) error {
 	return c.store.Cancel(ctx, jobID)
 }
 
+// Signal delivers payload to a workflow waiting on name. The payload is
+// checkpointed on first delivery, so late or duplicate signals under the same
+// name are ignored. Signaling a finished job fails.
+func (c *Client) Signal(ctx context.Context, jobID, name string, payload any) error {
+	var data []byte
+	switch p := payload.(type) {
+	case json.RawMessage:
+		data = p
+	case []byte:
+		data = p
+	default:
+		var err error
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+	}
+	return c.store.Signal(ctx, jobID, name, data)
+}
+
 func (c *Client) RetryDeadLetter(ctx context.Context, jobID string) (Job, error) {
 	return c.store.RetryDeadLetter(ctx, jobID)
 }
@@ -201,6 +221,22 @@ func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, 
 // Sleep must run directly in the workflow, not inside a Step function.
 func Sleep(ctx context.Context, name string, d time.Duration) error {
 	return engine.Sleep(ctx, name, d)
+}
+
+// WaitSignal waits for the first signal delivered under name, without holding
+// a worker slot. The delivered payload is checkpointed, so every resumed run
+// and retry sees the same value; keep names unique per wait, like Steps. It
+// must run directly in the workflow, not inside a Step function.
+func WaitSignal[T any](ctx context.Context, name string) (T, error) {
+	var value T
+	raw, err := engine.WaitSignal(ctx, name)
+	if err != nil {
+		return value, err
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, fmt.Errorf("signal %q: decode payload: %w", name, err)
+	}
+	return value, nil
 }
 
 type EnqueueOption func(*EnqueueRequest)

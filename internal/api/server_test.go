@@ -101,6 +101,10 @@ func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, b
 	return nil, false, nil
 }
 
+func (s *fakeStore) GetSignal(context.Context, string, string) (json.RawMessage, bool, error) {
+	return nil, false, nil
+}
+
 func (s *fakeStore) ListSteps(context.Context, string) ([]engine.StepResult, error) {
 	return []engine.StepResult{
 		{JobID: fakeJob().ID, Name: "compose", Result: json.RawMessage(`{"ok":true}`), CreatedAt: time.Now().Add(-2 * time.Minute)},
@@ -124,6 +128,10 @@ func (s *fakeStore) Fail(context.Context, string, string, error) error {
 }
 
 func (s *fakeStore) Suspend(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (s *fakeStore) Signal(context.Context, string, string, []byte) error {
 	return nil
 }
 

@@ -184,6 +184,9 @@ type workerTestStore struct {
 	claimJobs    []Job
 	heartbeatErr error
 	steps        map[string]json.RawMessage
+	// signals is append-only like the real mailbox: GetSignal serves the
+	// earliest delivery, never the latest.
+	signals map[string][]json.RawMessage
 	// getStepMisses simulates a duplicate-execution race where the checkpoint
 	// lands after this worker's lookup: GetStep reports not-found while
 	// SaveStep still hits the existing row.
@@ -237,6 +240,26 @@ func (s *workerTestStore) Suspend(_ context.Context, jobID, _ string, runAfter t
 	s.suspendedJobID = jobID
 	s.suspendedAfter = runAfter
 	return nil
+}
+
+func (s *workerTestStore) Signal(_ context.Context, jobID, name string, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.signals == nil {
+		s.signals = map[string][]json.RawMessage{}
+	}
+	s.signals[jobID+"/"+name] = append(s.signals[jobID+"/"+name], payload)
+	return nil
+}
+
+func (s *workerTestStore) GetSignal(_ context.Context, jobID, name string) (json.RawMessage, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queue := s.signals[jobID+"/"+name]
+	if len(queue) == 0 {
+		return nil, false, nil
+	}
+	return queue[0], true, nil
 }
 
 func (s *workerTestStore) Cancel(context.Context, string) error {

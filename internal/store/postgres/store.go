@@ -310,6 +310,51 @@ func (s *Store) Suspend(ctx context.Context, jobID, workerID string, runAfter ti
 	})
 }
 
+func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte) error {
+	if len(payload) == 0 {
+		payload = []byte(`{}`)
+	}
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		var id int64
+		err := tx.QueryRow(ctx, `
+			INSERT INTO job_signals (job_id, name, payload)
+			SELECT $1, $2, $3 FROM jobs
+			WHERE id = $1 AND status NOT IN ('succeeded', 'dead_letter', 'canceled')
+			RETURNING id
+		`, jobID, name, json.RawMessage(payload)).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return engine.ErrInvalidTransition
+		}
+		if err != nil {
+			return err
+		}
+		if err := appendEventTx(ctx, tx, jobID, "job.signaled", map[string]any{"signal": name}); err != nil {
+			return err
+		}
+		// Wake a parked waiter now instead of at its next nap tick. LEAST
+		// only fast-forwards; it never pushes a delayed job further out.
+		_, err = tx.Exec(ctx, `
+			UPDATE jobs SET run_after = LEAST(run_after, now()), updated_at = now()
+			WHERE id = $1 AND status IN ('queued', 'retrying')
+		`, jobID)
+		return err
+	})
+}
+
+func (s *Store) GetSignal(ctx context.Context, jobID, name string) (json.RawMessage, bool, error) {
+	var payload json.RawMessage
+	err := s.db.QueryRow(ctx, `
+		SELECT payload FROM job_signals WHERE job_id = $1 AND name = $2 ORDER BY id LIMIT 1
+	`, jobID, name).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, true, nil
+}
+
 func (s *Store) Complete(ctx context.Context, jobID, workerID string, result []byte) error {
 	if len(result) == 0 {
 		result = []byte(`{}`)
