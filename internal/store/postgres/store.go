@@ -292,6 +292,24 @@ func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDura
 	return s.appendEvent(ctx, jobID, "job.heartbeat", map[string]any{"worker_id": workerID})
 }
 
+func (s *Store) Suspend(ctx context.Context, jobID, workerID string, runAfter time.Time) error {
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', run_after = $3, attempt = GREATEST(attempt - 1, 0),
+				lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+			WHERE id = $1 AND lease_owner = $2 AND status = 'running'
+		`, jobID, workerID, runAfter)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return engine.ErrInvalidTransition
+		}
+		return appendEventTx(ctx, tx, jobID, "job.suspended", map[string]any{"run_after": runAfter})
+	})
+}
+
 func (s *Store) Complete(ctx context.Context, jobID, workerID string, result []byte) error {
 	if len(result) == 0 {
 		result = []byte(`{}`)

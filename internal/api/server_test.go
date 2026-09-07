@@ -123,6 +123,10 @@ func (s *fakeStore) Fail(context.Context, string, string, error) error {
 	return nil
 }
 
+func (s *fakeStore) Suspend(context.Context, string, string, time.Time) error {
+	return nil
+}
+
 func (s *fakeStore) Cancel(context.Context, string) error {
 	return nil
 }

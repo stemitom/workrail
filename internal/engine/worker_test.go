@@ -152,6 +152,32 @@ func TestWorkerDrainsInFlightJobsOnShutdown(t *testing.T) {
 	}
 }
 
+func TestWorkerSuspendsJobWithoutFailing(t *testing.T) {
+	store := &workerTestStore{}
+	registry := NewRegistry()
+	registry.Register("wait-a-bit", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if err := Sleep(ctx, "settle", time.Hour); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+	worker := &Worker{
+		ID:            "worker-a",
+		Store:         store,
+		Registry:      registry,
+		LeaseDuration: time.Minute,
+	}
+
+	worker.runJob(context.Background(), Job{ID: "job-1", WorkflowType: "wait-a-bit", Payload: []byte(`{}`)})
+
+	if store.suspendedJobID != "job-1" {
+		t.Fatalf("suspended job = %q, want job-1", store.suspendedJobID)
+	}
+	if store.completed || store.failedJobID != "" {
+		t.Fatal("suspended job must neither complete nor fail")
+	}
+}
+
 type workerTestStore struct {
 	mu sync.Mutex
 
@@ -167,6 +193,8 @@ type workerTestStore struct {
 	completedJobID string
 	failedJobID    string
 	failedErr      error
+	suspendedJobID string
+	suspendedAfter time.Time
 }
 
 func (s *workerTestStore) Enqueue(context.Context, EnqueueRequest) (Job, bool, error) {
@@ -200,6 +228,14 @@ func (s *workerTestStore) Fail(_ context.Context, jobID, _ string, cause error) 
 	defer s.mu.Unlock()
 	s.failedJobID = jobID
 	s.failedErr = cause
+	return nil
+}
+
+func (s *workerTestStore) Suspend(_ context.Context, jobID, _ string, runAfter time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suspendedJobID = jobID
+	s.suspendedAfter = runAfter
 	return nil
 }
 

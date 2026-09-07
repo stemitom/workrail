@@ -173,10 +173,22 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 	cancel()
 	<-heartbeatDone
 
+	// One shared write context: exactly one terminal branch below runs.
+	recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer recordCancel()
+
+	var suspend *SuspendError
+	if errors.As(err, &suspend) {
+		if suspendErr := w.Store.Suspend(recordCtx, job.ID, w.ID, suspend.RunAfter); suspendErr != nil {
+			w.logger().Error("suspend failed", "job_id", job.ID, "error", suspendErr)
+		} else {
+			w.logger().Info("job suspended", "job_id", job.ID, "run_after", suspend.RunAfter)
+		}
+		return
+	}
+
 	if err != nil {
 		w.logger().Warn("job failed", "job_id", job.ID, "error", err)
-		recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer recordCancel()
 		if failErr := w.Store.Fail(recordCtx, job.ID, w.ID, err); failErr != nil {
 			w.logger().Error("record failure failed", "job_id", job.ID, "error", failErr)
 		} else {
@@ -185,8 +197,6 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 		return
 	}
 
-	recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer recordCancel()
 	if err := w.Store.Complete(recordCtx, job.ID, w.ID, result); err != nil {
 		w.logger().Error("complete failed", "job_id", job.ID, "error", err)
 		return

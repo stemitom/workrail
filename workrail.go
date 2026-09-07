@@ -196,6 +196,13 @@ func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, 
 	return value, nil
 }
 
+// Sleep waits d without holding a worker slot. See engine.Sleep for the
+// suspend/resume contract: names must be stable and unique per workflow, and
+// Sleep must run directly in the workflow, not inside a Step function.
+func Sleep(ctx context.Context, name string, d time.Duration) error {
+	return engine.Sleep(ctx, name, d)
+}
+
 type EnqueueOption func(*EnqueueRequest)
 
 func WithIdempotencyKey(key string) EnqueueOption {

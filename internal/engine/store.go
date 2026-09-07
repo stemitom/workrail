@@ -15,6 +15,9 @@ type Store interface {
 	PruneCompleted(ctx context.Context, queue string, olderThan time.Duration) (int, error)
 	Complete(ctx context.Context, jobID, workerID string, result []byte) error
 	Fail(ctx context.Context, jobID, workerID string, cause error) error
+	// Suspend re-queues a running job for runAfter without consuming a retry
+	// attempt, freeing its worker slot while a durable timer waits.
+	Suspend(ctx context.Context, jobID, workerID string, runAfter time.Time) error
 	Cancel(ctx context.Context, jobID string) error
 	RetryDeadLetter(ctx context.Context, jobID string) (Job, error)
 	Replay(ctx context.Context, jobID string) (Job, error)
