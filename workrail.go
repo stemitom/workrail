@@ -28,6 +28,20 @@ const (
 	StatusCanceled   = engine.StatusCanceled
 )
 
+// ErrPermanent marks a failure retrying cannot fix. Match it with
+// IsPermanent; produce it with Permanent.
+var ErrPermanent = engine.ErrPermanent
+
+// Permanent wraps err so the worker dead-letters the job immediately instead
+// of spending its remaining attempts. Use it for rejections that will repeat
+// identically — a closed account, a failed validation, a provider's 4xx — and
+// leave transient failures unwrapped so backoff and retries still apply. The
+// returned error keeps err's message and unwraps to it.
+func Permanent(err error) error { return engine.Permanent(err) }
+
+// IsPermanent reports whether err, or anything it wraps, was marked permanent.
+func IsPermanent(err error) bool { return engine.IsPermanent(err) }
+
 type Job = engine.Job
 type Event = engine.Event
 type EnqueueRequest = engine.EnqueueRequest

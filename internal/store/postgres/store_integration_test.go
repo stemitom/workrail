@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -573,4 +574,65 @@ func hasQueueDepth(depths []engine.QueueDepth, queue, status string, count int64
 		}
 	}
 	return false
+}
+
+func TestIntegrationPermanentFailureSkipsRetries(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "payout",
+		Payload:      []byte(`{}`),
+		MaxAttempts:  5,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{
+		WorkerID:      "worker-a",
+		LeaseDuration: time.Minute,
+		Limit:         1,
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	cause := engine.Permanent(errors.New("account closed"))
+	if err := store.Fail(ctx, enqueued.ID, "worker-a", cause); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	job, events, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	// Four attempts remained; a permanent cause must not spend them.
+	if job.Status != engine.StatusDeadLetter {
+		t.Fatalf("status = %s, want %s", job.Status, engine.StatusDeadLetter)
+	}
+	if job.Attempt != 1 {
+		t.Fatalf("attempt = %d, want 1", job.Attempt)
+	}
+	if job.Error == nil || *job.Error != "account closed" {
+		t.Fatalf("error = %v, want account closed", job.Error)
+	}
+
+	var failed bool
+	for _, event := range events {
+		if event.EventType != "job.failed" {
+			continue
+		}
+		failed = true
+		var details struct {
+			Permanent  bool   `json:"permanent"`
+			NextStatus string `json:"next_status"`
+		}
+		if err := json.Unmarshal(event.Details, &details); err != nil {
+			t.Fatalf("decode job.failed details: %v", err)
+		}
+		if !details.Permanent {
+			t.Fatalf("job.failed details = %s, want permanent flag", event.Details)
+		}
+	}
+	if !failed {
+		t.Fatal("no job.failed event recorded")
+	}
 }

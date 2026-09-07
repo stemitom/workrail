@@ -325,7 +325,7 @@ func (s *Store) Fail(ctx context.Context, jobID, workerID string, cause error) e
 			return err
 		}
 
-		next := engine.NextStatusAfterFailure(attempt, maxAttempts)
+		next := engine.NextStatusAfterFailure(attempt, maxAttempts, cause)
 		runAfter := time.Now().UTC().Add(engine.Backoff(attempt))
 		if next == engine.StatusDeadLetter {
 			runAfter = time.Now().UTC()
@@ -338,7 +338,13 @@ func (s *Store) Fail(ctx context.Context, jobID, workerID string, cause error) e
 		`, jobID, workerID, next, cause.Error(), runAfter); err != nil {
 			return err
 		}
-		return appendEventTx(ctx, tx, jobID, "job.failed", map[string]any{"error": cause.Error(), "next_status": next})
+		details := map[string]any{"error": cause.Error(), "next_status": next}
+		if engine.IsPermanent(cause) {
+			// Records why the remaining attempts went unspent, so the dashboard
+			// does not read as a job that silently skipped its retries.
+			details["permanent"] = true
+		}
+		return appendEventTx(ctx, tx, jobID, "job.failed", details)
 	})
 }
 

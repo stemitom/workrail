@@ -92,6 +92,33 @@ If `send-receipt` fails, the retry skips `charge-card` and returns its saved res
 
 Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries (`dlq retry` resumes; use `replay` for a genuinely fresh run), and are deleted with their job. Keep step names, and result types, stable while jobs are in flight — a renamed step re-runs, and a checkpoint that no longer decodes into the step's type fails the job. Results are stored as normalized `jsonb`; don't rely on byte-identical output. The built-in `sequence` workflow checkpoints each of its steps automatically and rejects duplicate step names.
 
+## Retries and Permanent Failures
+
+A failed attempt is retried with exponential backoff until `max_attempts` is
+spent, then dead-lettered. Some failures should not be retried at all — a
+closed account, a rejected transfer, a payload that will never parse — and
+spending four more attempts on them delays the operator and re-sends requests
+the provider has already refused. Wrap those in `workrail.Permanent`:
+
+```go
+charge, err := workrail.Step(ctx, "charge-card", func(ctx context.Context) (Charge, error) {
+	charge, err := billing.Charge(ctx, order)
+	if errors.Is(err, billing.ErrCardDeclined) {
+		return Charge{}, workrail.Permanent(err)
+	}
+	return charge, err // transient: let backoff and retries handle it
+})
+```
+
+A permanent failure dead-letters the job on the spot with its remaining
+attempts unspent, and records `"permanent": true` on the `job.failed` event so
+the skipped retries are visible rather than mysterious. The wrapped error keeps
+its message and still unwraps to its cause, so `errors.Is` on the original
+sentinel keeps working. `workrail.IsPermanent` reports whether an error was
+marked. Dead-lettered jobs are never pruned and never retried automatically —
+`dlq retry` resumes one from its last checkpoint once the underlying problem is
+fixed.
+
 ## Dashboard
 
 The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).

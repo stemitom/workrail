@@ -100,8 +100,11 @@ func NormalizeEnqueue(req EnqueueRequest) EnqueueRequest {
 	return req
 }
 
-func NextStatusAfterFailure(attempt, maxAttempts int) Status {
-	if attempt >= maxAttempts {
+// NextStatusAfterFailure decides whether a failed attempt is retried. A
+// permanent cause skips the remaining attempts: retrying it would only repeat
+// the same rejection against a live provider.
+func NextStatusAfterFailure(attempt, maxAttempts int, cause error) Status {
+	if IsPermanent(cause) || attempt >= maxAttempts {
 		return StatusDeadLetter
 	}
 	return StatusRetrying
