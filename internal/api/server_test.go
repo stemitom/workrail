@@ -14,7 +14,7 @@ import (
 )
 
 func TestAuthRequiresBearerToken(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "secret")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -53,7 +53,7 @@ func TestAuthRequiresBearerToken(t *testing.T) {
 }
 
 func TestNoAuthTokenDisablesAuth(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: ""})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 

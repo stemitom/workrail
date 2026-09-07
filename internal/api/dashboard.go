@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/stemitom/workrail/internal/engine"
+	"github.com/stemitom/workrail/internal/redact"
 )
 
 //go:embed templates
@@ -86,31 +87,43 @@ var liveStatuses = []engine.Status{
 	engine.StatusQueued, engine.StatusRunning, engine.StatusRetrying, engine.StatusDeadLetter,
 }
 
-var templateFuncs = template.FuncMap{
-	"shortID":     shortID,
-	"statusClass": statusClass,
-	"statusLabel": statusLabel,
-	"timeago":     timeago,
-	"rfc3339": func(t time.Time) string {
-		if t.IsZero() {
-			return "—"
-		}
-		return t.UTC().Format(time.RFC3339)
-	},
-	"deref": func(s *string) string {
-		if s == nil {
-			return ""
-		}
-		return *s
-	},
-	"prettyJSON":  prettyJSON,
-	"compactJSON": compactJSON,
+// templateFuncs binds the JSON renderers to a redactor so every payload,
+// result, and event detail the dashboard prints goes through it. The JSON API
+// is unaffected: it authenticates with the bearer token rather than the
+// dashboard session, so masking there would hide data from the machine callers
+// that need it without protecting anything a session holder can already reach.
+func templateFuncs(redactor *redact.Redactor) template.FuncMap {
+	return template.FuncMap{
+		"shortID":     shortID,
+		"statusClass": statusClass,
+		"statusLabel": statusLabel,
+		"timeago":     timeago,
+		"rfc3339": func(t time.Time) string {
+			if t.IsZero() {
+				return "—"
+			}
+			return t.UTC().Format(time.RFC3339)
+		},
+		"deref": func(s *string) string {
+			if s == nil {
+				return ""
+			}
+			return *s
+		},
+		"prettyJSON": func(data json.RawMessage) string {
+			return prettyJSON(redactor.JSON(data))
+		},
+		"compactJSON": func(data json.RawMessage) string {
+			return compactJSON(redactor.JSON(data))
+		},
+	}
 }
 
-func parseTemplates() map[string]*template.Template {
+func parseTemplates(redactor *redact.Redactor) map[string]*template.Template {
+	funcs := templateFuncs(redactor)
 	pages := map[string]*template.Template{}
 	for _, page := range []string{"overview", "jobs", "job", "login", "error"} {
-		pages[page] = template.Must(template.New("layout.gohtml").Funcs(templateFuncs).
+		pages[page] = template.Must(template.New("layout.gohtml").Funcs(funcs).
 			ParseFS(templateFS, "templates/layout.gohtml", "templates/"+page+".gohtml"))
 	}
 	return pages

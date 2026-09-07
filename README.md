@@ -127,6 +127,23 @@ The API server ships an embedded web dashboard at `http://localhost:8080/ui` —
 
 Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.
 
+### Redaction
+
+Workflow payloads carry whatever the application put in them, and the dashboard
+renders payloads, results, step checkpoints, and event details verbatim to
+anyone holding a session. Set `dashboard.redact_fields` (or
+`WORKRAIL_REDACT_FIELDS=account_number,ssn`) to mask those fields wherever the
+dashboard prints JSON. Matching is case-insensitive and ignores `-` and `_`, so
+one entry covers `account_number`, `accountNumber`, and `Account-Number`, and
+it applies at every depth including inside arrays.
+
+Redaction deliberately does not extend to the JSON API: that surface
+authenticates with the bearer token, which a dashboard session cannot use, and
+its machine callers need the real payload. Nor does it protect data at rest —
+the payload is still stored unencrypted in `jobs.payload`. Treat it as keeping
+sensitive values off an operator's screen, not as a substitute for keeping them
+out of payloads.
+
 ## Retention
 
 Retention is off by default. Set `worker.retention` (or `WORKRAIL_RETENTION`) to e.g. `168h` and workers will prune `succeeded` and `canceled` jobs (and their events) in their own queue older than that, in bounded batches during the periodic sweep. Invalid duration values fail at startup rather than silently defaulting. Dead-lettered jobs are never pruned automatically — they wait for an operator.
@@ -254,6 +271,9 @@ Workrail loads defaults first, then `workrail.yaml` if it exists, then environme
 - `WORKRAIL_WORKER_CONCURRENCY`: number of jobs a worker runs concurrently. Defaults to `4`.
 - `WORKRAIL_SHUTDOWN_TIMEOUT`: graceful worker drain timeout. Defaults to `30s`.
 - `WORKRAIL_WORKER_METRICS_ADDR`: worker Prometheus metrics listen address. Defaults to `:9090`; set empty to disable.
+- `WORKRAIL_API_TOKEN`: bearer token required by the API, and the dashboard sign-in secret. Empty disables auth.
+- `WORKRAIL_REDACT_FIELDS`: comma-separated JSON field names masked in everything the dashboard renders.
+- `WORKRAIL_RETENTION`: prune succeeded and canceled jobs older than this. Defaults to off.
 
 ## Migrations
 

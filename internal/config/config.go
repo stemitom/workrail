@@ -7,16 +7,25 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/stemitom/workrail/internal/redact"
+
 	"gopkg.in/yaml.v3"
 )
 
 const DefaultDatabaseURL = "postgres://durable:durable@localhost:5432/durable?sslmode=disable"
 
 type Config struct {
-	DatabaseURL string        `yaml:"database_url"`
-	API         APIConfig     `yaml:"api"`
-	Worker      WorkerConfig  `yaml:"worker"`
-	Tracing     TracingConfig `yaml:"tracing"`
+	DatabaseURL string          `yaml:"database_url"`
+	API         APIConfig       `yaml:"api"`
+	Dashboard   DashboardConfig `yaml:"dashboard"`
+	Worker      WorkerConfig    `yaml:"worker"`
+	Tracing     TracingConfig   `yaml:"tracing"`
+}
+
+type DashboardConfig struct {
+	// RedactFields are JSON field names masked in payloads, results, step
+	// checkpoints, and event details wherever the dashboard renders them.
+	RedactFields []string `yaml:"redact_fields"`
 }
 
 type APIConfig struct {
@@ -133,6 +142,9 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("WORKRAIL_API_TOKEN"); value != "" {
 		cfg.API.AuthToken = value
+	}
+	if value := os.Getenv("WORKRAIL_REDACT_FIELDS"); value != "" {
+		cfg.Dashboard.RedactFields = redact.Split(value)
 	}
 	if value := os.Getenv("WORKRAIL_RETENTION"); value != "" {
 		cfg.Worker.Retention = value

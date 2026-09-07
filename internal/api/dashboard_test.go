@@ -8,10 +8,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/stemitom/workrail/internal/redact"
 )
 
 func TestDashboardRendersPages(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: ""})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -44,7 +46,7 @@ func TestDashboardRendersPages(t *testing.T) {
 }
 
 func TestDashboardAuthFlow(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "secret")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -112,7 +114,7 @@ func TestDashboardAuthFlow(t *testing.T) {
 }
 
 func TestJobsPagination(t *testing.T) {
-	server := New(&fakeStore{listCount: uiJobsLimit}, slog.Default(), "")
+	server := New(&fakeStore{listCount: uiJobsLimit}, slog.Default(), Options{AuthToken: ""})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -145,7 +147,7 @@ func TestJobsPagination(t *testing.T) {
 }
 
 func TestLoginRateLimit(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "secret")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -164,7 +166,7 @@ func TestLoginRateLimit(t *testing.T) {
 }
 
 func TestDashboardPostRejectsCrossOrigin(t *testing.T) {
-	server := New(&fakeStore{}, slog.Default(), "secret")
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -188,4 +190,32 @@ func readBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(body)
+}
+
+func TestDashboardRedactsConfiguredFields(t *testing.T) {
+	server := New(&fakeStore{}, slog.Default(), Options{RedactFields: []string{"user"}})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/ui/jobs/" + fakeJob().ID)
+	if err != nil {
+		t.Fatalf("get job page: %v", err)
+	}
+	body := readBody(t, resp)
+	if strings.Contains(body, "u_1") {
+		t.Fatal("job page rendered a redacted field's value")
+	}
+	if !strings.Contains(body, redact.Mask) {
+		t.Fatalf("job page missing %s marker", redact.Mask)
+	}
+
+	// The JSON API authenticates separately and machine callers need the real
+	// payload, so redaction must not leak into it.
+	resp, err = ts.Client().Get(ts.URL + "/jobs/" + fakeJob().ID)
+	if err != nil {
+		t.Fatalf("get job JSON: %v", err)
+	}
+	if apiBody := readBody(t, resp); !strings.Contains(apiBody, "u_1") {
+		t.Fatalf("JSON API should not redact, got %.200s", apiBody)
+	}
 }

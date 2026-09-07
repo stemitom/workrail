@@ -5,6 +5,12 @@ api:
   # Bearer token required on every endpoint except /healthz. Empty disables auth.
   auth_token: ""
 
+dashboard:
+  # JSON field names masked in payloads, results, step checkpoints, and event
+  # details wherever the dashboard renders them. Case-insensitive; '-' and '_'
+  # are ignored. The JSON API is not redacted — it uses the bearer token.
+  redact_fields: []
+
 worker:
   id: worker-1
   queue: default

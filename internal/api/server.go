@@ -15,6 +15,7 @@ import (
 
 	"github.com/stemitom/workrail/internal/engine"
 	"github.com/stemitom/workrail/internal/observability"
+	"github.com/stemitom/workrail/internal/redact"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -29,15 +30,30 @@ type Server struct {
 	loginLimits loginLimiter
 }
 
-func New(store engine.Store, logger *slog.Logger, authToken string) *Server {
+// Options configures a Server. The zero value is a valid unauthenticated
+// server that renders payloads verbatim.
+type Options struct {
+	// AuthToken required as a bearer token on the JSON API, and as the
+	// dashboard sign-in secret. Empty disables authentication entirely.
+	AuthToken string
+	// RedactFields are JSON field names masked in everything the dashboard
+	// renders — payloads, results, step checkpoints, and event details.
+	RedactFields []string
+}
+
+func New(store engine.Store, logger *slog.Logger, opts Options) *Server {
+	redactor := redact.New(opts.RedactFields)
 	s := &Server{
 		store: store, logger: logger, mux: http.NewServeMux(),
-		authToken: []byte(authToken), templates: parseTemplates(),
+		authToken: []byte(opts.AuthToken), templates: parseTemplates(redactor),
 	}
 	observability.RegisterQueueDepthCollector(store)
 	s.routes()
-	if authToken == "" {
+	if opts.AuthToken == "" {
 		logger.Warn("api auth token not configured; all endpoints are unauthenticated")
+	}
+	if fields := redactor.Fields(); len(fields) > 0 {
+		logger.Info("dashboard redaction enabled", "fields", fields)
 	}
 	return s
 }

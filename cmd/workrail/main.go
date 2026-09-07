@@ -150,8 +150,11 @@ func runAPI(ctx context.Context, cfg appconfig.Config) error {
 
 	addr := cfg.API.Addr
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           api.New(store, slog.Default(), cfg.API.AuthToken).Handler(),
+		Addr: addr,
+		Handler: api.New(store, slog.Default(), api.Options{
+			AuthToken:    cfg.API.AuthToken,
+			RedactFields: cfg.Dashboard.RedactFields,
+		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
