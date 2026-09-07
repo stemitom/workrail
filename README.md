@@ -6,7 +6,10 @@ A mini Temporal-style durable workflow engine in Go. It includes an API server, 
 go get github.com/stemitom/workrail
 ```
 
-See `examples/embedded` for registering workflows and running a worker inside your own service.
+See `examples/embedded` for registering workflows and running a worker inside
+your own service, and `examples/payments` for a complete application — a
+payouts service with a ledger, a fake ACH rail, and reproducible failure
+scenarios.
 
 ## Quick Start
 
@@ -260,6 +263,13 @@ job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
     "user_id": "user_123",
 }, workrail.WithQueue("emails"), workrail.WithIdempotencyKey("welcome-email-user_123"))
 ```
+
+Enqueue options: `WithQueue`, `WithIdempotencyKey`, `WithMaxAttempts`, and
+`WithRunAfter` (the job stays unclaimable until that time — a delayed retry, or
+a check scheduled for later). `workrail.Permanent` marks an error as
+non-retryable; `workrail.Step` checkpoints a result.
+
+`examples/payments` puts all of these together in a working payouts service.
 
 ## Environment
 

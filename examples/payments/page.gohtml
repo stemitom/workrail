@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payments — Workrail example</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd; --panel: #ffffff; --line: #e6e6ea; --ink: #1d1d1f;
+    --muted: #6e6e73; --accent: #0071e3; --ok: #1a7f45; --warn: #9a6400; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131315; --panel: #1c1c1f; --line: #2c2c31; --ink: #f5f5f7;
+            --muted: #98989d; --accent: #2e8bff; --ok: #4cc38a; --warn: #e0a53c; --bad: #ff6b60; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 48px 24px 96px; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
+  main { max-width: 940px; margin: 0 auto; display: grid; gap: 32px; }
+  header h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: -0.02em; font-weight: 600; }
+  header p { margin: 0; color: var(--muted); }
+  header a { color: var(--accent); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+  h2 { margin: 0 0 14px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 0 14px 8px; white-space: nowrap; }
+  td { padding: 10px 14px; border-top: 1px solid var(--line); vertical-align: middle; }
+  th:first-child, td:first-child { padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.tight { white-space: nowrap; }
+  /* The failure reason gets its own full-width line: it is a sentence, and
+     squeezing it into the status column crushes every other column. */
+  tr.reason td { border-top: 0; padding-top: 0; }
+  .reason-text { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+  .pill.paid { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+  .pill.pending, .pill.submitted { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .pill.failed, .pill.returned { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; }
+  label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+  input, select, button { font: inherit; height: 40px; padding: 0 11px; border-radius: 9px;
+                          border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  select { appearance: none; padding-right: 28px;
+           background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                             linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+           background-position: right 14px center, right 9px center;
+           background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+  button { background: var(--accent); border-color: transparent; color: #fff; font-weight: 500; cursor: pointer; }
+  .error { color: var(--bad); margin: 0 0 12px; }
+  .empty { color: var(--muted); }
+  a.job { color: var(--accent); text-decoration: none; }
+  a.job:hover { text-decoration: underline; }
+  footer { max-width: 940px; margin: 28px auto 0; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Payments</h1>
+    <p>A mini payouts service on Workrail. Every payout is a durable job —
+       follow one in the <a href="{{.Dashboard}}/ui">Workrail dashboard</a>.</p>
+  </header>
+
+  <section>
+    <h2>Send a payout</h2>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <form method="post" action="/payouts">
+      <label>From
+        <select name="account_id">
+          {{range .Accounts}}<option value="{{.ID}}">{{.Name}} — {{money .BalanceCents}}</option>{{end}}
+        </select>
+      </label>
+      <label>Amount<input name="amount" value="25.00" inputmode="decimal"></label>
+      <label>Beneficiary<input name="account_name" value="Katherine Johnson"></label>
+      <label>Account number<input name="account_number" value="000123456789"></label>
+      <label>Routing number<input name="routing_number" value="021000021"></label>
+      <button type="submit">Send</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Balances</h2>
+    <table>
+      <thead><tr><th>Account</th><th>ID</th><th class="num">Available</th></tr></thead>
+      <tbody>
+        {{range .Accounts}}
+        <tr><td>{{.Name}}</td><td class="mono">{{.ID}}</td><td class="num">{{money .BalanceCents}}</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Payouts</h2>
+    {{if .Payouts}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 130px">Status</th>
+          <th class="num" style="width: 110px">Amount</th>
+          <th style="width: 120px">Destination</th>
+          <th>Bank ref</th>
+          <th style="width: 90px">Job</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Payouts}}
+        <tr>
+          <td class="tight"><span class="pill {{.Status}}">{{.Status}}</span></td>
+          <td class="num">{{money .AmountCents}}</td>
+          <td class="mono tight">{{last4 .AccountNumber}}</td>
+          <td class="mono tight">{{if .BankRef}}{{.BankRef}}{{else}}—{{end}}</td>
+          <td class="tight">{{if .JobID}}<a class="job mono" href="{{$.Dashboard}}/ui/jobs/{{.JobID}}">{{slice .JobID 0 8}}</a>{{else}}—{{end}}</td>
+        </tr>
+        {{if .FailureReason}}
+        <tr class="reason"><td colspan="5"><span class="reason-text">{{.FailureReason}}</span></td></tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">No payouts yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Notifications</h2>
+    {{if .Notifications}}
+    <table>
+      <tbody>
+        {{range .Notifications}}
+        <tr><td class="mono tight" style="width: 70px">{{.Channel}}</td><td>{{.Body}}</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">Nothing sent yet.</p>{{end}}
+  </section>
+</main>
+<footer>
+  Amounts ending in .13 make the rail fail twice before it clears · .99 settles as a return ·
+  routing number 000000000 is rejected outright.
+</footer>
+<script>
+  // The page has no live channel of its own; a slow reload is enough to watch
+  // a payout move, and it stays out of the way while the form is in use.
+  setInterval(() => {
+    if (!document.querySelector("input:focus, select:focus")) location.reload();
+  }, 3000);
+</script>
+</body>
+</html>
