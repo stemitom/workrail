@@ -104,6 +104,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /jobs/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /jobs/{id}/replay", s.replay)
 	s.mux.HandleFunc("POST /jobs/{id}/retry", s.retryDeadLetter)
+	s.mux.HandleFunc("POST /jobs/{id}/signals", s.signal)
 	s.mux.Handle("GET /metrics", promhttp.Handler())
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -224,6 +225,26 @@ func (s *Server) retryDeadLetter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) signal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string          `json:"name"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, errors.New("signal name is required"))
+		return
+	}
+	if err := s.store.Signal(r.Context(), r.PathValue("id"), req.Name, req.Payload); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "signaled"})
 }
 
 func sameOrigin(r *http.Request) bool {

@@ -637,6 +637,15 @@ func TestIntegrationPermanentFailureSkipsRetries(t *testing.T) {
 	}
 }
 
+func TestIntegrationSignalUnknownJobIsNotFound(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	err := store.Signal(ctx, "00000000-0000-0000-0000-000000000000", "approval", []byte(`{}`))
+	if !errors.Is(err, engine.ErrNotFound) {
+		t.Fatalf("signal to unknown job = %v, want ErrNotFound", err)
+	}
+}
+
 func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 	store, ctx := integrationStore(t)
 

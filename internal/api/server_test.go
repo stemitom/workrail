@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,8 +68,55 @@ func TestNoAuthTokenDisablesAuth(t *testing.T) {
 	}
 }
 
+func TestSignalEndpoint(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		signalErr error
+		want      int
+	}{
+		{"delivers", `{"name":"approval","payload":{"ok":true}}`, nil, http.StatusAccepted},
+		{"missing name", `{"payload":{}}`, nil, http.StatusBadRequest},
+		{"bad json", `{`, nil, http.StatusBadRequest},
+		{"unknown job", `{"name":"approval"}`, engine.ErrNotFound, http.StatusNotFound},
+		{"terminal job", `{"name":"approval"}`, engine.ErrInvalidTransition, http.StatusConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{signalErr: tc.signalErr}
+			server := New(store, slog.Default(), Options{AuthToken: ""})
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+
+			resp, err := ts.Client().Post(ts.URL+"/jobs/"+fakeJob().ID+"/signals", "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+
+	store := &fakeStore{}
+	server := New(store, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	resp, err := ts.Client().Post(ts.URL+"/jobs/"+fakeJob().ID+"/signals", "application/json", strings.NewReader(`{"name":"approval"}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if store.signaled.jobID != fakeJob().ID || store.signaled.name != "approval" {
+		t.Fatalf("signaled = %+v, want job approval", store.signaled)
+	}
+}
+
 type fakeStore struct {
 	listCount int
+	signalErr error
+	signaled  struct{ jobID, name string }
 }
 
 func fakeJob() engine.Job {
@@ -131,8 +179,9 @@ func (s *fakeStore) Suspend(context.Context, string, string, time.Time) error {
 	return nil
 }
 
-func (s *fakeStore) Signal(context.Context, string, string, []byte) error {
-	return nil
+func (s *fakeStore) Signal(_ context.Context, jobID, name string, _ []byte) error {
+	s.signaled.jobID, s.signaled.name = jobID, name
+	return s.signalErr
 }
 
 func (s *fakeStore) Cancel(context.Context, string) error {

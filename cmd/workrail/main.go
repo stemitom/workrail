@@ -69,6 +69,8 @@ func run() error {
 		return cancelJob(ctx, cfg, args[1:])
 	case "replay":
 		return replayJob(ctx, cfg, args[1:])
+	case "signal":
+		return signalJob(ctx, cfg, args[1:])
 	default:
 		usage()
 		return fmt.Errorf("unknown command %q", args[0])
@@ -378,6 +380,24 @@ func replayJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 	return printJSON(job)
 }
 
+func signalJob(ctx context.Context, cfg appconfig.Config, args []string) error {
+	fs := flag.NewFlagSet("signal", flag.ContinueOnError)
+	name := fs.String("name", "", "signal name the workflow waits on")
+	payload := fs.String("payload", "{}", "JSON or YAML signal payload")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || *name == "" {
+		return fmt.Errorf("usage: workrail signal <job-id> --name <name> [--payload '{...}']")
+	}
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.Signal(ctx, fs.Arg(0), *name, json.RawMessage(*payload))
+}
+
 func dlq(ctx context.Context, cfg appconfig.Config, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: workrail dlq <list|retry>")
@@ -544,6 +564,7 @@ func usage() {
   inspect [--json] <job-id>
   replay <job-id>
   cancel <job-id>
+  signal <job-id> --name <name> [--payload '{...}']
   dlq list [--limit 20] [--queue default] [--type echo] [--json]
   dlq retry [--json] <job-id>`)
 }

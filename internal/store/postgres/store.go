@@ -323,6 +323,13 @@ func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte) 
 			RETURNING id
 		`, jobID, name, json.RawMessage(payload)).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
+			var exists bool
+			if qerr := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)`, jobID).Scan(&exists); qerr != nil {
+				return qerr
+			}
+			if !exists {
+				return engine.ErrNotFound
+			}
 			return engine.ErrInvalidTransition
 		}
 		if err != nil {
