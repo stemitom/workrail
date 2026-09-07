@@ -149,7 +149,7 @@ func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, b
 	return nil, false, nil
 }
 
-func (s *fakeStore) GetSignal(context.Context, string, string) (json.RawMessage, bool, error) {
+func (s *fakeStore) GetSignalAt(context.Context, string, string, int) (json.RawMessage, bool, error) {
 	return nil, false, nil
 }
 

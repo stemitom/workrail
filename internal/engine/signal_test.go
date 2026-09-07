@@ -56,3 +56,31 @@ func TestWaitSignalNeedsWorker(t *testing.T) {
 		t.Fatal("WaitSignal without a runner should fail, not block")
 	}
 }
+
+func TestWaitSignalAtConsumesStreamInOrder(t *testing.T) {
+	store := &workerTestStore{}
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+
+	for _, payload := range []string{`{"n":1}`, `{"n":2}`} {
+		if err := store.Signal(context.Background(), "job-1", "vote", []byte(payload)); err != nil {
+			t.Fatalf("signal: %v", err)
+		}
+	}
+	for i, want := range []string{`{"n":1}`, `{"n":2}`} {
+		got, err := WaitSignalAt(ctx, "vote", i)
+		if err != nil {
+			t.Fatalf("wait %d: %v", i, err)
+		}
+		if string(got) != want {
+			t.Fatalf("wait %d = %s, want %s", i, got, want)
+		}
+	}
+	// Past the last delivery the wait suspends instead of inventing a value.
+	var suspend *SuspendError
+	if _, err := WaitSignalAt(ctx, "vote", 2); !errors.As(err, &suspend) {
+		t.Fatalf("wait past stream = %v, want suspend", err)
+	}
+	if _, err := WaitSignalAt(ctx, "vote", -1); err == nil {
+		t.Fatal("negative index should fail")
+	}
+}

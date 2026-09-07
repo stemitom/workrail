@@ -123,6 +123,43 @@ marked. Dead-lettered jobs are never pruned and never retried automatically —
 `dlq retry` resumes one from its last checkpoint once the underlying problem is
 fixed.
 
+## Signals
+
+Workflows can wait for the world, not just for time. `workrail.WaitSignal`
+parks the job without holding a worker slot until a signal arrives; the first
+delivery checkpoints, so every resumed run and retry sees the same payload:
+
+```go
+approval, err := workrail.WaitSignal[Approval](ctx, "approval")
+if err != nil {
+	return nil, err
+}
+```
+
+`workrail.WaitSignalAt` consumes the index-th delivery under a name, so a
+workflow can read a stream of signals in order. Keep names stable and the wait
+order deterministic, like Steps — a wait past the last delivery suspends until
+more signals arrive.
+
+Deliver from Go, HTTP, or the CLI:
+
+```go
+err := client.Signal(ctx, jobID, "approval", Approval{By: "ops", OK: true})
+```
+
+```bash
+curl -X POST localhost:8080/jobs/<job-id>/signals \
+  -H "Authorization: Bearer $WORKRAIL_API_TOKEN" \
+  -d '{"name":"approval","payload":{"ok":true}}'
+go run ./cmd/workrail signal <job-id> --name approval --payload '{"ok":true}'
+```
+
+A signal wakes a parked waiter at once: delivery fast-forwards the job's
+`run_after` in the same transaction, so the next worker poll (about a second
+by default) reclaims it. If anything is missed the wait naps 15 seconds
+between mailbox checks, costing no slot and no retry attempt.
+Signaling a finished job fails, as does signaling an unknown one.
+
 ## Dashboard
 
 The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).

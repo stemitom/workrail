@@ -228,8 +228,16 @@ func Sleep(ctx context.Context, name string, d time.Duration) error {
 // and retry sees the same value; keep names unique per wait, like Steps. It
 // must run directly in the workflow, not inside a Step function.
 func WaitSignal[T any](ctx context.Context, name string) (T, error) {
+	return WaitSignalAt[T](ctx, name, 0)
+}
+
+// WaitSignalAt waits for the index-th signal delivered under name (0-based,
+// in delivery order), so a workflow can consume a stream of signals in order.
+// Each delivery checkpoints under its own index; a wait past the last
+// delivery suspends until more signals arrive.
+func WaitSignalAt[T any](ctx context.Context, name string, index int) (T, error) {
 	var value T
-	raw, err := engine.WaitSignal(ctx, name)
+	raw, err := engine.WaitSignalAt(ctx, name, index)
 	if err != nil {
 		return value, err
 	}

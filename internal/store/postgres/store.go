@@ -348,11 +348,14 @@ func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte) 
 	})
 }
 
-func (s *Store) GetSignal(ctx context.Context, jobID, name string) (json.RawMessage, bool, error) {
+func (s *Store) GetSignalAt(ctx context.Context, jobID, name string, index int) (json.RawMessage, bool, error) {
+	if index < 0 {
+		return nil, false, nil
+	}
 	var payload json.RawMessage
 	err := s.db.QueryRow(ctx, `
-		SELECT payload FROM job_signals WHERE job_id = $1 AND name = $2 ORDER BY id LIMIT 1
-	`, jobID, name).Scan(&payload)
+		SELECT payload FROM job_signals WHERE job_id = $1 AND name = $2 ORDER BY id LIMIT 1 OFFSET $3
+	`, jobID, name, index).Scan(&payload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}

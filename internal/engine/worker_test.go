@@ -252,14 +252,14 @@ func (s *workerTestStore) Signal(_ context.Context, jobID, name string, payload 
 	return nil
 }
 
-func (s *workerTestStore) GetSignal(_ context.Context, jobID, name string) (json.RawMessage, bool, error) {
+func (s *workerTestStore) GetSignalAt(_ context.Context, jobID, name string, index int) (json.RawMessage, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.signals[jobID+"/"+name]
-	if len(queue) == 0 {
+	if index < 0 || index >= len(queue) {
 		return nil, false, nil
 	}
-	return queue[0], true, nil
+	return queue[index], true, nil
 }
 
 func (s *workerTestStore) Cancel(context.Context, string) error {

@@ -670,7 +670,7 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":false}`)); err != nil {
 		t.Fatalf("second signal: %v", err)
 	}
-	payload, found, err := store.GetSignal(ctx, enqueued.ID, "approval")
+	payload, found, err := store.GetSignalAt(ctx, enqueued.ID, "approval", 0)
 	if err != nil {
 		t.Fatalf("get signal: %v", err)
 	}
@@ -680,7 +680,17 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 	if !found || json.Unmarshal(payload, &delivered) != nil || !delivered.OK {
 		t.Fatalf("payload = %s, found = %v, want earliest delivery", payload, found)
 	}
-	if _, found, err := store.GetSignal(ctx, enqueued.ID, "other"); err != nil || found {
+	second, found, err := store.GetSignalAt(ctx, enqueued.ID, "approval", 1)
+	if err != nil {
+		t.Fatalf("get second signal: %v", err)
+	}
+	var later struct {
+		OK bool `json:"ok"`
+	}
+	if !found || json.Unmarshal(second, &later) != nil || later.OK {
+		t.Fatalf("second = %s, found = %v, want later delivery", second, found)
+	}
+	if _, found, err := store.GetSignalAt(ctx, enqueued.ID, "other", 0); err != nil || found {
 		t.Fatalf("unknown signal found = %v, err = %v, want miss", found, err)
 	}
 
