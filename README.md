@@ -20,6 +20,7 @@ Worker Prometheus metrics listen on `http://localhost:9090` in Docker Compose.
 ```bash
 go run ./cmd/workrail migrate up
 go run ./cmd/workrail enqueue --queue default --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
+go run ./cmd/workrail enqueue --queue default --type sleep --payload '{"seconds":1}' --delay 30s
 go run ./cmd/workrail list
 go run ./cmd/workrail list --queue default
 go run ./cmd/workrail list --status dead_letter

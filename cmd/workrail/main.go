@@ -248,9 +248,25 @@ func enqueue(ctx context.Context, cfg appconfig.Config, args []string) error {
 	payload := fs.String("payload", "{}", "JSON or YAML payload")
 	key := fs.String("idempotency-key", "", "idempotency key")
 	maxAttempts := fs.Int("max-attempts", 3, "max attempts")
+	delay := fs.Duration("delay", 0, "run no earlier than this long from now")
+	runAfter := fs.String("run-after", "", "run no earlier than this RFC3339 time")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *delay != 0 && *runAfter != "" {
+		return fmt.Errorf("--delay and --run-after are mutually exclusive")
+	}
+	var notBefore time.Time
+	switch {
+	case *delay != 0:
+		notBefore = time.Now().UTC().Add(*delay)
+	case *runAfter != "":
+		parsed, err := time.Parse(time.RFC3339, *runAfter)
+		if err != nil {
+			return fmt.Errorf("invalid --run-after %q: %w", *runAfter, err)
+		}
+		notBefore = parsed.UTC()
 	}
 	req := engine.EnqueueRequest{
 		Queue:          *queue,
@@ -258,6 +274,7 @@ func enqueue(ctx context.Context, cfg appconfig.Config, args []string) error {
 		Payload:        json.RawMessage(*payload),
 		IdempotencyKey: *key,
 		MaxAttempts:    *maxAttempts,
+		RunAfter:       notBefore,
 	}
 	store, err := postgres.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -522,6 +539,7 @@ func usage() {
   worker
   migrate up [--dir migrations]
   enqueue --queue default --type echo --payload '{"message":"hi"}' [--idempotency-key key]
+          [--max-attempts 3] [--delay 30s | --run-after 2026-01-01T00:00:00Z] [--json]
   list [--limit 20] [--queue default] [--status queued] [--type echo] [--json]
   inspect [--json] <job-id>
   replay <job-id>
