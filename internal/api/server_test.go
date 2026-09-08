@@ -175,11 +175,11 @@ func (s *fakeStore) Fail(context.Context, string, string, error) error {
 	return nil
 }
 
-func (s *fakeStore) Suspend(context.Context, string, string, time.Time) error {
-	return nil
+func (s *fakeStore) Suspend(context.Context, string, string, time.Time, int) (bool, error) {
+	return true, nil
 }
 
-func (s *fakeStore) Signal(_ context.Context, jobID, name string, _ []byte) error {
+func (s *fakeStore) Signal(_ context.Context, jobID, name string, _ []byte, _ string) error {
 	s.signaled.jobID, s.signaled.name = jobID, name
 	return s.signalErr
 }

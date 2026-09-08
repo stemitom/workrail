@@ -640,9 +640,82 @@ func TestIntegrationPermanentFailureSkipsRetries(t *testing.T) {
 func TestIntegrationSignalUnknownJobIsNotFound(t *testing.T) {
 	store, ctx := integrationStore(t)
 
-	err := store.Signal(ctx, "00000000-0000-0000-0000-000000000000", "approval", []byte(`{}`))
+	err := store.Signal(ctx, "00000000-0000-0000-0000-000000000000", "approval", []byte(`{}`), "")
 	if !errors.Is(err, engine.ErrNotFound) {
 		t.Fatalf("signal to unknown job = %v, want ErrNotFound", err)
+	}
+}
+
+func TestIntegrationSignalIdempotencyKeyDedupes(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "approval"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	for range 2 {
+		if err := store.Signal(ctx, enqueued.ID, "vote", []byte(`{"n":1}`), "req-1"); err != nil {
+			t.Fatalf("signal: %v", err)
+		}
+	}
+	if err := store.Signal(ctx, enqueued.ID, "vote", []byte(`{"n":2}`), "req-2"); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	var count int
+	if err := store.db.QueryRow(ctx, `SELECT count(*) FROM job_signals WHERE job_id = $1`, enqueued.ID).Scan(&count); err != nil {
+		t.Fatalf("count signals: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("mailbox holds %d rows, want 2 unique sends", count)
+	}
+	first, found, err := store.GetSignalAt(ctx, enqueued.ID, "vote", 0)
+	if err != nil || !found {
+		t.Fatalf("get signal: found = %v, err = %v", found, err)
+	}
+	var delivered struct {
+		N int `json:"n"`
+	}
+	if json.Unmarshal(first, &delivered) != nil || delivered.N != 1 {
+		t.Fatalf("payload = %s, want first send", first)
+	}
+}
+
+func TestIntegrationStaleSuspendBacksOff(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "approval"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	claimed, err := store.Claim(ctx, engine.ClaimOptions{WorkerID: "worker-a", LeaseDuration: time.Minute, Limit: 1})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v", err)
+	}
+	// A signal lands after the claim: the waiter's mailbox check already ran.
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{}`), ""); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	parked, err := store.Suspend(ctx, enqueued.ID, "worker-a", time.Now().UTC().Add(5*time.Minute), claimed[0].WakeVersion)
+	if err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if parked {
+		t.Fatal("stale Suspend parked over a signal wake-up")
+	}
+	// The job is untouched: still running, still owned, still claimable later.
+	job, _, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if job.Status != engine.StatusRunning {
+		t.Fatalf("status = %s, want running", job.Status)
+	}
+
+	parked, err = store.Suspend(ctx, enqueued.ID, "worker-a", time.Now().UTC().Add(5*time.Minute), job.WakeVersion)
+	if err != nil || !parked {
+		t.Fatalf("fresh Suspend parked = %v, err = %v, want park", parked, err)
 	}
 }
 
@@ -664,10 +737,10 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":true}`)); err != nil {
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":true}`), ""); err != nil {
 		t.Fatalf("signal: %v", err)
 	}
-	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":false}`)); err != nil {
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{"ok":false}`), ""); err != nil {
 		t.Fatalf("second signal: %v", err)
 	}
 	payload, found, err := store.GetSignalAt(ctx, enqueued.ID, "approval", 0)
@@ -698,7 +771,7 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 	if err := store.Complete(ctx, enqueued.ID, "worker-a", []byte(`{}`)); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{}`)); !errors.Is(err, engine.ErrInvalidTransition) {
+	if err := store.Signal(ctx, enqueued.ID, "approval", []byte(`{}`), ""); !errors.Is(err, engine.ErrInvalidTransition) {
 		t.Fatalf("signal to finished job = %v, want ErrInvalidTransition", err)
 	}
 
@@ -738,7 +811,7 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 			if err := terminal.finish(ctx, store, job); err != nil {
 				t.Fatalf("finish: %v", err)
 			}
-			if err := store.Signal(ctx, job.ID, "approval", []byte(`{}`)); !errors.Is(err, engine.ErrInvalidTransition) {
+			if err := store.Signal(ctx, job.ID, "approval", []byte(`{}`), ""); !errors.Is(err, engine.ErrInvalidTransition) {
 				t.Fatalf("signal to %s job = %v, want ErrInvalidTransition", terminal.name, err)
 			}
 		})

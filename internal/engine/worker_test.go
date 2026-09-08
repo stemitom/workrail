@@ -184,9 +184,10 @@ type workerTestStore struct {
 	claimJobs    []Job
 	heartbeatErr error
 	steps        map[string]json.RawMessage
-	// signals is append-only like the real mailbox: GetSignal serves the
-	// earliest delivery, never the latest.
-	signals map[string][]json.RawMessage
+	// signals is append-only like the real mailbox: GetSignalAt serves by
+	// index, and signalKeys dedupes like the idempotency index.
+	signals    map[string][]json.RawMessage
+	signalKeys map[string]struct{}
 	// getStepMisses simulates a duplicate-execution race where the checkpoint
 	// lands after this worker's lookup: GetStep reports not-found while
 	// SaveStep still hits the existing row.
@@ -234,19 +235,28 @@ func (s *workerTestStore) Fail(_ context.Context, jobID, _ string, cause error) 
 	return nil
 }
 
-func (s *workerTestStore) Suspend(_ context.Context, jobID, _ string, runAfter time.Time) error {
+func (s *workerTestStore) Suspend(_ context.Context, jobID, _ string, runAfter time.Time, _ int) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.suspendedJobID = jobID
 	s.suspendedAfter = runAfter
-	return nil
+	return true, nil
 }
 
-func (s *workerTestStore) Signal(_ context.Context, jobID, name string, payload []byte) error {
+func (s *workerTestStore) Signal(_ context.Context, jobID, name string, payload []byte, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.signals == nil {
 		s.signals = map[string][]json.RawMessage{}
+	}
+	if s.signalKeys == nil {
+		s.signalKeys = map[string]struct{}{}
+	}
+	if key != "" {
+		if _, dup := s.signalKeys[jobID+"/"+name+"/"+key]; dup {
+			return nil
+		}
+		s.signalKeys[jobID+"/"+name+"/"+key] = struct{}{}
 	}
 	s.signals[jobID+"/"+name] = append(s.signals[jobID+"/"+name], payload)
 	return nil

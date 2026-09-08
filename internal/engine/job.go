@@ -32,13 +32,17 @@ type Job struct {
 	RunAfter       time.Time       `json:"run_after"`
 	LeaseOwner     *string         `json:"lease_owner,omitempty"`
 	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
-	HeartbeatAt    *time.Time      `json:"heartbeat_at,omitempty"`
-	Result         json.RawMessage `json:"result,omitempty"`
-	Error          *string         `json:"error,omitempty"`
-	TraceID        *string         `json:"trace_id,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	// WakeVersion tracks signal wake-ups: Claim hands it out, Signal bumps
+	// it, Suspend only parks on a match (see Store.Suspend). Internal fence
+	// token, not API surface.
+	WakeVersion int             `json:"-"`
+	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       *string         `json:"error,omitempty"`
+	TraceID     *string         `json:"trace_id,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	CompletedAt *time.Time      `json:"completed_at,omitempty"`
 }
 
 type Event struct {

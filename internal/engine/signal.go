@@ -10,8 +10,9 @@ import (
 
 // signalPollInterval bounds how long a signal wait naps between mailbox
 // checks. Signal delivery is a re-queue, not a push: each nap frees the
-// worker slot and costs no retry attempt, so this only sets latency.
-const signalPollInterval = 15 * time.Second
+// worker slot and costs no retry attempt, so this only sets worst-case
+// latency for a wake-up the fast-forward missed.
+const signalPollInterval = 5 * time.Second
 
 // signalKey namespaces signal checkpoints away from Step and timer names. The
 // index makes successive waits address successive deliveries: a resumed run

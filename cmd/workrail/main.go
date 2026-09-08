@@ -384,6 +384,7 @@ func signalJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 	fs := flag.NewFlagSet("signal", flag.ContinueOnError)
 	name := fs.String("name", "", "signal name the workflow waits on")
 	payload := fs.String("payload", "{}", "JSON or YAML signal payload")
+	key := fs.String("idempotency-key", "", "dedupe retried sends")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -395,7 +396,7 @@ func signalJob(ctx context.Context, cfg appconfig.Config, args []string) error {
 		return err
 	}
 	defer store.Close()
-	return store.Signal(ctx, fs.Arg(0), *name, json.RawMessage(*payload))
+	return store.Signal(ctx, fs.Arg(0), *name, json.RawMessage(*payload), *key)
 }
 
 func dlq(ctx context.Context, cfg appconfig.Config, args []string) error {

@@ -141,8 +141,14 @@ func (c *Client) Cancel(ctx context.Context, jobID string) error {
 
 // Signal delivers payload to a workflow waiting on name. The payload is
 // checkpointed on first delivery, so late or duplicate signals under the same
-// name are ignored. Signaling a finished job fails.
-func (c *Client) Signal(ctx context.Context, jobID, name string, payload any) error {
+// name are ignored. Signaling a finished job fails. Pass
+// WithSignalIdempotencyKey so retried sends dedupe to a Noop instead of
+// appending a second row.
+func (c *Client) Signal(ctx context.Context, jobID, name string, payload any, opts ...SignalOption) error {
+	var o signalOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var data []byte
 	switch p := payload.(type) {
 	case json.RawMessage:
@@ -156,7 +162,22 @@ func (c *Client) Signal(ctx context.Context, jobID, name string, payload any) er
 			return err
 		}
 	}
-	return c.store.Signal(ctx, jobID, name, data)
+	return c.store.Signal(ctx, jobID, name, data, o.idempotencyKey)
+}
+
+type signalOptions struct {
+	idempotencyKey string
+}
+
+// SignalOption configures Client.Signal.
+type SignalOption func(*signalOptions)
+
+// WithSignalIdempotencyKey dedupes retried sends: a repeated key is a Noop
+// success, so webhook retries are safe to repeat.
+func WithSignalIdempotencyKey(key string) SignalOption {
+	return func(o *signalOptions) {
+		o.idempotencyKey = key
+	}
 }
 
 func (c *Client) RetryDeadLetter(ctx context.Context, jobID string) (Job, error) {

@@ -229,8 +229,9 @@ func (s *Server) retryDeadLetter(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) signal(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string          `json:"name"`
-		Payload json.RawMessage `json:"payload"`
+		Name           string          `json:"name"`
+		Payload        json.RawMessage `json:"payload"`
+		IdempotencyKey string          `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -240,7 +241,7 @@ func (s *Server) signal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("signal name is required"))
 		return
 	}
-	if err := s.store.Signal(r.Context(), r.PathValue("id"), req.Name, req.Payload); err != nil {
+	if err := s.store.Signal(r.Context(), r.PathValue("id"), req.Name, req.Payload, req.IdempotencyKey); err != nil {
 		writeStoreError(w, err)
 		return
 	}

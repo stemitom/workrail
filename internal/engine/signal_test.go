@@ -17,8 +17,8 @@ func TestWaitSignalSuspendsWhenEmpty(t *testing.T) {
 	if !errors.As(err, &suspend) {
 		t.Fatalf("WaitSignal = %v, want suspend", err)
 	}
-	if until := time.Until(suspend.RunAfter); until < 10*time.Second || until > time.Minute {
-		t.Fatalf("nap = %v, want ~15s", until)
+	if until := time.Until(suspend.RunAfter); until < 3*time.Second || until > 10*time.Second {
+		t.Fatalf("nap = %v, want ~5s", until)
 	}
 }
 
@@ -26,7 +26,7 @@ func TestWaitSignalDeliversOnce(t *testing.T) {
 	store := &workerTestStore{}
 	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
 
-	if err := store.Signal(context.Background(), "job-1", "approval", json.RawMessage(`{"ok":true}`)); err != nil {
+	if err := store.Signal(context.Background(), "job-1", "approval", json.RawMessage(`{"ok":true}`), ""); err != nil {
 		t.Fatalf("signal: %v", err)
 	}
 	first, err := WaitSignal(ctx, "approval")
@@ -39,7 +39,7 @@ func TestWaitSignalDeliversOnce(t *testing.T) {
 
 	// A late duplicate under the same name must not replace the delivery:
 	// the mailbox keeps earliest-wins order and the checkpoint freezes it.
-	if err := store.Signal(context.Background(), "job-1", "approval", json.RawMessage(`{"ok":false}`)); err != nil {
+	if err := store.Signal(context.Background(), "job-1", "approval", json.RawMessage(`{"ok":false}`), ""); err != nil {
 		t.Fatalf("duplicate signal: %v", err)
 	}
 	second, err := WaitSignal(ctx, "approval")
@@ -57,12 +57,37 @@ func TestWaitSignalNeedsWorker(t *testing.T) {
 	}
 }
 
+func TestSignalIdempotencyKeyDedupes(t *testing.T) {
+	store := &workerTestStore{}
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+
+	first := json.RawMessage(`{"n":1}`)
+	for range 2 {
+		if err := store.Signal(context.Background(), "job-1", "vote", first, "req-1"); err != nil {
+			t.Fatalf("signal: %v", err)
+		}
+	}
+	if err := store.Signal(context.Background(), "job-1", "vote", json.RawMessage(`{"n":2}`), "req-2"); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	if got := len(store.signals["job-1/vote"]); got != 2 {
+		t.Fatalf("mailbox holds %d rows, want 2 unique sends", got)
+	}
+	got, err := WaitSignal(ctx, "vote")
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if string(got) != string(first) {
+		t.Fatalf("payload = %s, want first send %s", got, first)
+	}
+}
+
 func TestWaitSignalAtConsumesStreamInOrder(t *testing.T) {
 	store := &workerTestStore{}
 	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
 
 	for _, payload := range []string{`{"n":1}`, `{"n":2}`} {
-		if err := store.Signal(context.Background(), "job-1", "vote", []byte(payload)); err != nil {
+		if err := store.Signal(context.Background(), "job-1", "vote", []byte(payload), ""); err != nil {
 			t.Fatalf("signal: %v", err)
 		}
 	}

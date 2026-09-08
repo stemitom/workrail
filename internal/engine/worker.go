@@ -179,9 +179,13 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 
 	var suspend *SuspendError
 	if errors.As(err, &suspend) {
-		if suspendErr := w.Store.Suspend(recordCtx, job.ID, w.ID, suspend.RunAfter); suspendErr != nil {
+		parked, suspendErr := w.Store.Suspend(recordCtx, job.ID, w.ID, suspend.RunAfter, job.WakeVersion)
+		switch {
+		case suspendErr != nil:
 			w.logger().Error("suspend failed", "job_id", job.ID, "error", suspendErr)
-		} else {
+		case !parked:
+			w.logger().Info("suspend skipped, job changed under worker", "job_id", job.ID)
+		default:
 			w.logger().Info("job suspended", "job_id", job.ID, "run_after", suspend.RunAfter)
 		}
 		return

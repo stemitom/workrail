@@ -65,7 +65,7 @@ func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.
 		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
 		ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = jobs.updated_at
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at,
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at,
 			(xmax = 0) AS inserted
 	`, req.Queue, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter).
 			Scan(append(jobScanTargets(&job), &inserted)...); err != nil {
@@ -116,7 +116,7 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 		FROM claimable
 		WHERE j.id = claimable.id
 		RETURNING j.id, j.queue, j.workflow_type, j.payload, j.status, j.idempotency_key, j.attempt, j.max_attempts, j.run_after,
-			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.created_at, j.updated_at, j.completed_at
+			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.wake_version, j.created_at, j.updated_at, j.completed_at
 	`, opts.Limit, opts.WorkerID, pgInterval(opts.LeaseDuration), opts.Queue)
 		if err != nil {
 			return err
@@ -292,37 +292,55 @@ func (s *Store) Heartbeat(ctx context.Context, jobID, workerID string, leaseDura
 	return s.appendEvent(ctx, jobID, "job.heartbeat", map[string]any{"worker_id": workerID})
 }
 
-func (s *Store) Suspend(ctx context.Context, jobID, workerID string, runAfter time.Time) error {
-	return s.withTx(ctx, func(tx pgx.Tx) error {
+func (s *Store) Suspend(ctx context.Context, jobID, workerID string, runAfter time.Time, wakeVersion int) (bool, error) {
+	parked := false
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE jobs
 			SET status = 'queued', run_after = $3, attempt = GREATEST(attempt - 1, 0),
 				lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
-			WHERE id = $1 AND lease_owner = $2 AND status = 'running'
-		`, jobID, workerID, runAfter)
+			WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND wake_version = $4
+		`, jobID, workerID, runAfter, wakeVersion)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return engine.ErrInvalidTransition
+			// The job changed under us — a signal wake, a cancel, or a lease
+			// steal. That newer state wins; there is nothing to park.
+			return nil
 		}
+		parked = true
 		return appendEventTx(ctx, tx, jobID, "job.suspended", map[string]any{"run_after": runAfter})
 	})
+	return parked, err
 }
 
-func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte) error {
+func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte, idempotencyKey string) error {
 	if len(payload) == 0 {
 		payload = []byte(`{}`)
 	}
 	return s.withTx(ctx, func(tx pgx.Tx) error {
 		var id int64
 		err := tx.QueryRow(ctx, `
-			INSERT INTO job_signals (job_id, name, payload)
-			SELECT $1, $2, $3 FROM jobs
+			INSERT INTO job_signals (job_id, name, payload, idempotency_key)
+			SELECT $1, $2, $3, NULLIF($4, '') FROM jobs
 			WHERE id = $1 AND status NOT IN ('succeeded', 'dead_letter', 'canceled')
+			ON CONFLICT (job_id, name, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			RETURNING id
-		`, jobID, name, json.RawMessage(payload)).Scan(&id)
+		`, jobID, name, json.RawMessage(payload), idempotencyKey).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// No row: a duplicate send, an unknown job, or a terminal job.
+			if idempotencyKey != "" {
+				var dup bool
+				if qerr := tx.QueryRow(ctx, `
+					SELECT EXISTS (SELECT 1 FROM job_signals WHERE job_id = $1 AND name = $2 AND idempotency_key = $3)
+				`, jobID, name, idempotencyKey).Scan(&dup); qerr != nil {
+					return qerr
+				}
+				if dup {
+					return nil
+				}
+			}
 			var exists bool
 			if qerr := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)`, jobID).Scan(&exists); qerr != nil {
 				return qerr
@@ -338,11 +356,14 @@ func (s *Store) Signal(ctx context.Context, jobID, name string, payload []byte) 
 		if err := appendEventTx(ctx, tx, jobID, "job.signaled", map[string]any{"signal": name}); err != nil {
 			return err
 		}
-		// Wake a parked waiter now instead of at its next nap tick. LEAST
-		// only fast-forwards; it never pushes a delayed job further out.
+		// Wake a parked waiter now instead of at its next nap tick, and bump
+		// the version so a racing Suspend backs off. The bump applies to
+		// running jobs too: that is exactly the race being closed. LEAST is a
+		// no-op there — a running job always has run_after <= now() — so only
+		// parked jobs actually move.
 		_, err = tx.Exec(ctx, `
-			UPDATE jobs SET run_after = LEAST(run_after, now()), updated_at = now()
-			WHERE id = $1 AND status IN ('queued', 'retrying')
+			UPDATE jobs SET run_after = LEAST(run_after, now()), wake_version = wake_version + 1, updated_at = now()
+			WHERE id = $1 AND status NOT IN ('succeeded', 'dead_letter', 'canceled')
 		`, jobID)
 		return err
 	})
@@ -444,7 +465,7 @@ func (s *Store) RetryDeadLetter(ctx context.Context, jobID string) (engine.Job, 
 			heartbeat_at = NULL, result = NULL, error = NULL, updated_at = now(), completed_at = NULL
 		WHERE id = $1 AND status = 'dead_letter'
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -461,7 +482,7 @@ func (s *Store) Replay(ctx context.Context, jobID string) (engine.Job, error) {
 		INSERT INTO jobs (queue, workflow_type, payload, max_attempts)
 		SELECT queue, workflow_type, payload, max_attempts FROM jobs WHERE id = $1
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -476,7 +497,7 @@ func (s *Store) Get(ctx context.Context, jobID string) (engine.Job, []engine.Eve
 	var job engine.Job
 	err := s.db.QueryRow(ctx, `
 		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
 		FROM jobs WHERE id = $1
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
@@ -502,7 +523,7 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
 		FROM jobs
 		WHERE ($2 = '' OR queue = $2)
 			AND ($3 = '' OR status = $3::job_status)
@@ -619,7 +640,7 @@ func jobScanTargets(job *engine.Job) []any {
 	return []any{
 		&job.ID, &job.Queue, &job.WorkflowType, &job.Payload, &job.Status, &job.IdempotencyKey, &job.Attempt, &job.MaxAttempts,
 		&job.RunAfter, &job.LeaseOwner, &job.LeaseExpiresAt, &job.HeartbeatAt, &job.Result, &job.Error,
-		&job.TraceID, &job.CreatedAt, &job.UpdatedAt, &job.CompletedAt,
+		&job.TraceID, &job.WakeVersion, &job.CreatedAt, &job.UpdatedAt, &job.CompletedAt,
 	}
 }
 

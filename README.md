@@ -154,9 +154,13 @@ curl -X POST localhost:8080/jobs/<job-id>/signals \
 go run ./cmd/workrail signal <job-id> --name approval --payload '{"ok":true}'
 ```
 
+Pass an idempotency key (`idempotency_key` in the API, `--idempotency-key`
+on the CLI, `workrail.WithSignalIdempotencyKey` in Go) and retried sends
+dedupe to a Noop instead of appending a second row — safe to repeat webhooks.
+
 A signal wakes a parked waiter at once: delivery fast-forwards the job's
 `run_after` in the same transaction, so the next worker poll (about a second
-by default) reclaims it. If anything is missed the wait naps 15 seconds
+by default) reclaims it. If anything is missed the wait naps 5 seconds
 between mailbox checks, costing no slot and no retry attempt.
 Signaling a finished job fails, as does signaling an unknown one.
 
