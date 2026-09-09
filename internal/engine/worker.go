@@ -127,7 +127,7 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 	ctx, span := tracer.Start(parent, "workflow.execute")
 	defer span.End()
 
-	jobCtx, cancel := context.WithCancel(WithStepRunner(ctx, w.Store, job.ID, w.ID))
+	jobCtx, cancel := context.WithCancel(WithRegistry(WithStepRunner(ctx, w.Store, job.ID, w.ID), w.Registry))
 	defer cancel()
 
 	heartbeatDone := make(chan struct{})

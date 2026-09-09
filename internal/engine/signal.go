@@ -42,7 +42,7 @@ func WaitSignalAt(ctx context.Context, name string, index int) (json.RawMessage,
 		return nil, errors.New("workrail: WaitSignal requires a worker")
 	}
 	key := signalKey(name, index)
-	if cached, found, err := runner.store.GetStep(ctx, runner.jobID, key); err != nil {
+	if cached, found, err := runner.store.GetStep(ctx, runner.jobID, runner.scope(key)); err != nil {
 		return nil, fmt.Errorf("load signal %q: %w", name, err)
 	} else if found {
 		return cached, nil

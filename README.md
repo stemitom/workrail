@@ -263,7 +263,14 @@ Environment overrides are also available:
 
 ## Workflow Definitions
 
-Built-in Go workflows live in `internal/engine/workflows.go`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:
+Register orchestration with `client.Register` and side effects with
+`client.RegisterActivity`. Workflows must reach the world through `Step`,
+`Sleep`, `WaitSignal`, or `workrail.ExecuteActivity` — never inline — so
+retries replay checkpoints instead of repeating side effects. Each activity
+runs in its own checkpoint scope, so same-named steps in different activities
+stay independent. Enqueueing an activity type runs it as a single-step job.
+
+Built-in activities (`echo`, `sleep`) and the `sequence` workflow live in `internal/engine`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:
 
 ```yaml
 steps:

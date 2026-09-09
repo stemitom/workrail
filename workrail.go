@@ -48,6 +48,7 @@ type EnqueueRequest = engine.EnqueueRequest
 type ListOptions = engine.ListOptions
 type QueueDepth = engine.QueueDepth
 type WorkflowFunc = engine.WorkflowFunc
+type ActivityFunc = engine.ActivityFunc
 
 type Options struct {
 	DatabaseURL string
@@ -101,6 +102,13 @@ func (c *Client) Close() {
 
 func (c *Client) Register(name string, workflow WorkflowFunc) {
 	c.registry.Register(name, workflow)
+}
+
+// RegisterActivity adds a side-effecting activity. Workflows must reach side
+// effects through ExecuteActivity (or a Step function), never inline, so
+// retries replay checkpoints instead of repeating the world.
+func (c *Client) RegisterActivity(name string, fn ActivityFunc) {
+	c.registry.RegisterActivity(name, fn)
 }
 
 func (c *Client) Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error) {
@@ -233,6 +241,25 @@ func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, 
 	}
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return value, fmt.Errorf("step %q: decode checkpoint: %w", name, err)
+	}
+	return value, nil
+}
+
+// ExecuteActivity runs a registered activity with its own checkpoint scope
+// and decodes its result. Steps inside the activity checkpoint under the
+// activity path, independent of same-named steps elsewhere.
+func ExecuteActivity[T any](ctx context.Context, name string, input any) (T, error) {
+	var value T
+	data, err := json.Marshal(input)
+	if err != nil {
+		return value, err
+	}
+	raw, err := engine.ExecuteActivity(ctx, name, data)
+	if err != nil {
+		return value, err
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, fmt.Errorf("activity %q: decode result: %w", name, err)
 	}
 	return value, nil
 }

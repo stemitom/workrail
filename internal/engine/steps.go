@@ -13,6 +13,10 @@ type stepRunner struct {
 	store    StepStore
 	jobID    string
 	workerID string
+	// frame namespaces checkpoints to the enclosing activity path set by
+	// ExecuteActivity. Empty at the workflow top level, where names keep
+	// their historical meaning so in-flight checkpoints still match.
+	frame string
 }
 
 type StepResult struct {
@@ -37,6 +41,15 @@ func WithStepRunner(ctx context.Context, store StepStore, jobID, workerID string
 	return context.WithValue(ctx, stepRunnerKey{}, stepRunner{store: store, jobID: jobID, workerID: workerID})
 }
 
+// scope namespaces name under the activity frame. The top-level frame is
+// empty and returns the name unchanged.
+func (r stepRunner) scope(name string) string {
+	if r.frame == "" {
+		return name
+	}
+	return r.frame + "/" + name
+}
+
 // RunStep checkpoints fn's result per job: on later attempts a completed
 // step's saved result is returned instead of running fn again, so a retried
 // workflow resumes after its last completed step. The guarantee is effectively
@@ -49,7 +62,7 @@ func RunStep(ctx context.Context, name string, fn func(context.Context) (json.Ra
 	if !ok {
 		return fn(ctx)
 	}
-	cached, found, err := runner.store.GetStep(ctx, runner.jobID, name)
+	cached, found, err := runner.store.GetStep(ctx, runner.jobID, runner.scope(name))
 	if err != nil {
 		return nil, fmt.Errorf("load step %q: %w", name, err)
 	}
@@ -67,7 +80,7 @@ func RunStep(ctx context.Context, name string, fn func(context.Context) (json.Ra
 	// arriving after fn's side effect cannot lose the checkpoint.
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	stored, err := runner.store.SaveStep(saveCtx, runner.jobID, runner.workerID, name, result)
+	stored, err := runner.store.SaveStep(saveCtx, runner.jobID, runner.workerID, runner.scope(name), result)
 	if err != nil {
 		return nil, fmt.Errorf("save step %q: %w", name, err)
 	}

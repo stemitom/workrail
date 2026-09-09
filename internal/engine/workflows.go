@@ -11,28 +11,43 @@ import (
 
 type WorkflowFunc func(context.Context, json.RawMessage) (json.RawMessage, error)
 
+// ActivityFunc documents the activity contract: side effects live here,
+// orchestration (Step, Sleep, WaitSignal, ExecuteActivity) in WorkflowFunc.
+// Same shape, kept as an alias — the honesty is in which Register takes it.
+type ActivityFunc = WorkflowFunc
+
 type Registry struct {
-	workflows map[string]WorkflowFunc
+	workflows  map[string]WorkflowFunc
+	activities map[string]ActivityFunc
 }
 
 func NewRegistry() *Registry {
-	r := &Registry{workflows: map[string]WorkflowFunc{}}
-	r.Register("echo", echoWorkflow)
-	r.Register("sleep", sleepWorkflow)
-	r.Register("sequence", sequenceWorkflow(r))
+	r := &Registry{workflows: map[string]WorkflowFunc{}, activities: map[string]ActivityFunc{}}
+	r.RegisterActivity("echo", echoWorkflow)
+	r.RegisterActivity("sleep", sleepWorkflow)
+	r.Register("sequence", sequenceWorkflow())
 	return r
 }
 
+// Register adds a workflow (orchestration). RegisterActivity adds a
+// side-effecting activity.
 func (r *Registry) Register(name string, wf WorkflowFunc) {
 	r.workflows[name] = wf
 }
 
+func (r *Registry) RegisterActivity(name string, fn ActivityFunc) {
+	r.activities[name] = fn
+}
+
 func (r *Registry) Execute(ctx context.Context, typ string, payload json.RawMessage) (json.RawMessage, error) {
-	wf, ok := r.workflows[typ]
-	if !ok {
-		return nil, fmt.Errorf("unknown workflow type %q", typ)
+	if wf, ok := r.workflows[typ]; ok {
+		return wf(ctx, payload)
 	}
-	return wf(ctx, payload)
+	// Single-activity jobs: enqueueing an activity type runs it directly.
+	if fn, ok := r.activities[typ]; ok {
+		return fn(ctx, payload)
+	}
+	return nil, fmt.Errorf("unknown workflow type %q", typ)
 }
 
 func echoWorkflow(_ context.Context, payload json.RawMessage) (json.RawMessage, error) {
@@ -60,7 +75,7 @@ func sleepWorkflow(ctx context.Context, payload json.RawMessage) (json.RawMessag
 	}
 }
 
-func sequenceWorkflow(reg *Registry) WorkflowFunc {
+func sequenceWorkflow() WorkflowFunc {
 	return func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
 		var spec struct {
 			Steps []struct {
@@ -83,7 +98,7 @@ func sequenceWorkflow(reg *Registry) WorkflowFunc {
 				return nil, fmt.Errorf("duplicate step name %q", step.Name)
 			}
 			result, err := RunStep(ctx, step.Name, func(ctx context.Context) (json.RawMessage, error) {
-				return reg.Execute(ctx, step.Activity, step.Input)
+				return ExecuteActivity(pushFrame(ctx, step.Name), step.Activity, step.Input)
 			})
 			if err != nil {
 				return nil, err
