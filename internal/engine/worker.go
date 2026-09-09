@@ -82,10 +82,16 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return w.drain(ctx, cancelExec, &wg)
 		case <-sweepTicker.C:
-			if count, err := w.Store.DeadLetterExhausted(ctx); err != nil {
+			ids, err := w.Store.DeadLetterExhausted(ctx)
+			if err != nil {
 				w.logger().Error("dead-letter sweep failed", "error", err)
-			} else if count > 0 {
-				w.logger().Warn("dead-lettered jobs with expired leases and exhausted attempts", "count", count)
+			} else {
+				if len(ids) > 0 {
+					w.logger().Warn("dead-lettered jobs with expired leases and exhausted attempts", "count", len(ids))
+				}
+				for _, id := range ids {
+					w.compensate(ctx, id)
+				}
 			}
 			if w.RetentionPeriod > 0 {
 				if count, err := w.Store.PruneCompleted(ctx, w.Queue, w.RetentionPeriod); err != nil {
@@ -127,7 +133,7 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 	ctx, span := tracer.Start(parent, "workflow.execute")
 	defer span.End()
 
-	jobCtx, cancel := context.WithCancel(WithRegistry(WithStepRunner(ctx, w.Store, job.ID, w.ID), w.Registry))
+	jobCtx, cancel := context.WithCancel(WithRegistry(WithStepRunner(ctx, w.Store, job.ID, w.ID, job.Queue), w.Registry))
 	defer cancel()
 
 	heartbeatDone := make(chan struct{})
@@ -197,6 +203,7 @@ func (w *Worker) runJob(parent context.Context, job Job) {
 			w.logger().Error("record failure failed", "job_id", job.ID, "error", failErr)
 		} else {
 			observability.JobsFailed.WithLabelValues(job.Queue, job.WorkflowType).Inc()
+			w.compensate(context.Background(), job.ID)
 		}
 		return
 	}

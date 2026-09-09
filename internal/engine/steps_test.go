@@ -29,7 +29,7 @@ func TestRunStepWithoutRunnerJustRuns(t *testing.T) {
 
 func TestRunStepCheckpointsPerJob(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	calls := 0
 	step := func(context.Context) (json.RawMessage, error) {
@@ -52,7 +52,7 @@ func TestRunStepCheckpointsPerJob(t *testing.T) {
 		t.Fatalf("checkpointed result %s != original %s", second, first)
 	}
 
-	otherJob := WithStepRunner(context.Background(), store, "job-2", "worker-a")
+	otherJob := WithStepRunner(context.Background(), store, "job-2", "worker-a", "")
 	if _, err := RunStep(otherJob, "charge", step); err != nil {
 		t.Fatalf("other job: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRunStepCheckpointsPerJob(t *testing.T) {
 
 func TestRunStepDoesNotCheckpointFailures(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	calls := 0
 	step := func(context.Context) (json.RawMessage, error) {
@@ -94,7 +94,7 @@ func TestRunStepRaceLoserGetsWinningCheckpoint(t *testing.T) {
 	// The loser of a duplicate-execution race: its GetStep missed (checkpoint
 	// landed after), it computed its own result, and SaveStep hit the
 	// conflict. RunStep must return the persisted winner, not the local value.
-	loser := WithStepRunner(context.Background(), store, "job-1", "worker-b")
+	loser := WithStepRunner(context.Background(), store, "job-1", "worker-b", "")
 	result, err := RunStep(loser, "charge", func(context.Context) (json.RawMessage, error) {
 		return json.RawMessage(`{"winner":false}`), nil
 	})

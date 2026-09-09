@@ -9,7 +9,7 @@ import (
 )
 
 func activityTestContext(store *workerTestStore, reg *Registry) context.Context {
-	return WithRegistry(WithStepRunner(context.Background(), store, "job-1", "worker-a"), reg)
+	return WithRegistry(WithStepRunner(context.Background(), store, "job-1", "worker-a", ""), reg)
 }
 
 func TestActivitiesScopeStepCheckpoints(t *testing.T) {
@@ -26,7 +26,7 @@ func TestActivitiesScopeStepCheckpoints(t *testing.T) {
 	}
 	reg.RegisterActivity("a", mkActivity("a"))
 	reg.RegisterActivity("b", mkActivity("b"))
-	ctx := WithRegistry(WithStepRunner(context.Background(), store, "job-1", "worker-a"), reg)
+	ctx := WithRegistry(WithStepRunner(context.Background(), store, "job-1", "worker-a", ""), reg)
 
 	first, err := ExecuteActivity(ctx, "a", json.RawMessage(`{}`))
 	if err != nil {
@@ -63,7 +63,7 @@ func TestExecuteActivityNeedsWorkerAndRegistry(t *testing.T) {
 	if _, err := ExecuteActivity(context.Background(), "x", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("ExecuteActivity without a runner should fail")
 	}
-	runnerOnly := WithStepRunner(context.Background(), &workerTestStore{}, "job-1", "worker-a")
+	runnerOnly := WithStepRunner(context.Background(), &workerTestStore{}, "job-1", "worker-a", "")
 	if _, err := ExecuteActivity(runnerOnly, "echo", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("ExecuteActivity without a registry should fail")
 	}

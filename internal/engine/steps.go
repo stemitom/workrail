@@ -13,6 +13,9 @@ type stepRunner struct {
 	store    StepStore
 	jobID    string
 	workerID string
+	// queue is the parent job's queue: children enqueue there so the same
+	// pool that runs the parent can run them. Empty means "default".
+	queue string
 	// frame namespaces checkpoints to the enclosing activity path set by
 	// ExecuteActivity. Empty at the workflow top level, where names keep
 	// their historical meaning so in-flight checkpoints still match.
@@ -26,7 +29,8 @@ type StepResult struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// StepStore is the subset of Store that RunStep needs to checkpoint results.
+// StepStore is the subset of Store that the workflow runtime needs:
+// checkpointing, the signal mailbox, child job management, and job reads.
 // SaveStep returns the persisted result: on a first-write-wins race the
 // winner's checkpoint comes back, not the caller's input.
 type StepStore interface {
@@ -35,10 +39,12 @@ type StepStore interface {
 	// GetSignalAt returns the index-th signal delivered to jobID under name
 	// (0-based, in delivery order).
 	GetSignalAt(ctx context.Context, jobID, name string, index int) (json.RawMessage, bool, error)
+	Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error)
+	GetJob(ctx context.Context, jobID string) (Job, error)
 }
 
-func WithStepRunner(ctx context.Context, store StepStore, jobID, workerID string) context.Context {
-	return context.WithValue(ctx, stepRunnerKey{}, stepRunner{store: store, jobID: jobID, workerID: workerID})
+func WithStepRunner(ctx context.Context, store StepStore, jobID, workerID, queue string) context.Context {
+	return context.WithValue(ctx, stepRunnerKey{}, stepRunner{store: store, jobID: jobID, workerID: workerID, queue: queue})
 }
 
 // scope namespaces name under the activity frame. The top-level frame is

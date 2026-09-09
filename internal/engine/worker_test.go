@@ -199,10 +199,64 @@ type workerTestStore struct {
 	failedErr      error
 	suspendedJobID string
 	suspendedAfter time.Time
+	jobs           map[string]Job
+	events         []Event
+	exhausted      []string
+	enqueueSeq     int
 }
 
-func (s *workerTestStore) Enqueue(context.Context, EnqueueRequest) (Job, bool, error) {
-	return Job{}, false, nil
+func (s *workerTestStore) Enqueue(_ context.Context, req EnqueueRequest) (Job, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req = NormalizeEnqueue(req)
+	if s.jobs == nil {
+		s.jobs = map[string]Job{}
+	}
+	if req.IdempotencyKey != "" {
+		for _, job := range s.jobs {
+			if job.IdempotencyKey != nil && *job.IdempotencyKey == req.IdempotencyKey {
+				return job, false, nil
+			}
+		}
+	}
+	s.enqueueSeq++
+	job := Job{
+		ID:           "job-enqueued-" + string(rune('a'+s.enqueueSeq)),
+		Queue:        req.Queue,
+		WorkflowType: req.WorkflowType,
+		Payload:      req.Payload,
+		Status:       StatusQueued,
+		MaxAttempts:  req.MaxAttempts,
+		RunAfter:     req.RunAfter,
+		Attempt:      0,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if req.IdempotencyKey != "" {
+		key := req.IdempotencyKey
+		job.IdempotencyKey = &key
+	}
+	s.jobs[job.ID] = job
+	return job, true, nil
+}
+
+func (s *workerTestStore) GetJob(_ context.Context, jobID string) (Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return Job{}, ErrNotFound
+	}
+	return job, nil
+}
+
+func (s *workerTestStore) setJobStatus(jobID string, status Status) {
+	if s.jobs == nil {
+		s.jobs = map[string]Job{}
+	}
+	job := s.jobs[jobID]
+	job.Status = status
+	s.jobs[jobID] = job
 }
 
 func (s *workerTestStore) Claim(context.Context, ClaimOptions) ([]Job, error) {
@@ -232,6 +286,9 @@ func (s *workerTestStore) Fail(_ context.Context, jobID, _ string, cause error) 
 	defer s.mu.Unlock()
 	s.failedJobID = jobID
 	s.failedErr = cause
+	if _, ok := s.jobs[jobID]; ok {
+		s.setJobStatus(jobID, StatusDeadLetter)
+	}
 	return nil
 }
 
@@ -276,8 +333,17 @@ func (s *workerTestStore) Cancel(context.Context, string) error {
 	return nil
 }
 
-func (s *workerTestStore) DeadLetterExhausted(context.Context) (int, error) {
-	return 0, nil
+func (s *workerTestStore) DeadLetterExhausted(context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exhausted, nil
+}
+
+func (s *workerTestStore) RecordEvent(_ context.Context, jobID, eventType string, details []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, Event{JobID: jobID, EventType: eventType, Details: details})
+	return nil
 }
 
 func (s *workerTestStore) ListSteps(context.Context, string) ([]StepResult, error) {
@@ -319,7 +385,12 @@ func (s *workerTestStore) Replay(context.Context, string) (Job, error) {
 	return Job{}, nil
 }
 
-func (s *workerTestStore) Get(context.Context, string) (Job, []Event, error) {
+func (s *workerTestStore) Get(_ context.Context, jobID string) (Job, []Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[jobID]; ok {
+		return job, nil, nil
+	}
 	return Job{}, nil, nil
 }
 

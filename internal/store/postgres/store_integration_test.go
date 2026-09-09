@@ -332,12 +332,12 @@ func TestIntegrationExhaustedExpiredLeaseDeadLetters(t *testing.T) {
 		t.Fatalf("second claim = %+v, want none; exhausted job must not be reclaimed", second)
 	}
 
-	count, err := store.DeadLetterExhausted(ctx)
+	ids, err := store.DeadLetterExhausted(ctx)
 	if err != nil {
 		t.Fatalf("dead letter exhausted: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("dead-lettered %d jobs, want 1", count)
+	if len(ids) != 1 || ids[0] != enqueued.ID {
+		t.Fatalf("dead-lettered %v, want [%s]", ids, enqueued.ID)
 	}
 
 	job, events, err := store.Get(ctx, enqueued.ID)
@@ -816,4 +816,70 @@ func TestIntegrationSignalDeliverAndRejectTerminal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIntegrationChildRoundTrip(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	parent, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "payout"})
+	if err != nil {
+		t.Fatalf("enqueue parent: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{WorkerID: "worker-a", LeaseDuration: time.Minute, Limit: 10}); err != nil {
+		t.Fatalf("claim parent: %v", err)
+	}
+	runnerCtx := engine.WithStepRunner(ctx, store, parent.ID, "worker-a", "default")
+	runnerCtx = engine.WithRegistry(runnerCtx, engine.NewRegistry())
+
+	_, err = engine.ExecuteChild(runnerCtx, "settle", "settlement", []byte(`{}`))
+	var suspend *engine.SuspendError
+	if !errors.As(err, &suspend) {
+		t.Fatalf("first run = %v, want suspend", err)
+	}
+
+	children, err := store.List(ctx, engine.ListOptions{WorkflowType: "settlement", Limit: 10})
+	if err != nil || len(children) != 1 {
+		t.Fatalf("children = %+v, err = %v, want exactly 1", children, err)
+	}
+	child := children[0]
+	if child.Queue != "default" {
+		t.Fatalf("child queue = %q, want parent queue", child.Queue)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{WorkerID: "worker-b", Queue: "default", LeaseDuration: time.Minute, Limit: 10}); err != nil {
+		t.Fatalf("claim child: %v", err)
+	}
+	if err := store.Complete(ctx, child.ID, "worker-b", []byte(`{"status":"paid"}`)); err != nil {
+		t.Fatalf("complete child: %v", err)
+	}
+
+	// Same identity on retry: no second child row appears.
+	if _, err := engine.ExecuteChild(runnerCtx, "settle", "settlement", []byte(`{}`)); err != nil {
+		t.Fatalf("second run = %v, want child result", err)
+	}
+	children, err = store.List(ctx, engine.ListOptions{WorkflowType: "settlement", Limit: 10})
+	if err != nil || len(children) != 1 {
+		t.Fatalf("children = %d, want exactly 1 (stable identity)", len(children))
+	}
+}
+
+func TestIntegrationRecordEvent(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	enqueued, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "payout"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := store.RecordEvent(ctx, enqueued.ID, "job.compensated", []byte(`{"by":"saga"}`)); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	_, events, err := store.Get(ctx, enqueued.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	for _, event := range events {
+		if event.EventType == "job.compensated" {
+			return
+		}
+	}
+	t.Fatal("no job.compensated event recorded")
 }

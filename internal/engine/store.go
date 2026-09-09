@@ -11,7 +11,9 @@ type Store interface {
 	Claim(ctx context.Context, opts ClaimOptions) ([]Job, error)
 	Heartbeat(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) error
 	ListSteps(ctx context.Context, jobID string) ([]StepResult, error)
-	DeadLetterExhausted(ctx context.Context) (int, error)
+	// DeadLetterExhausted dead-letters running jobs with expired leases and
+	// exhausted attempts, returning their IDs so the worker can compensate.
+	DeadLetterExhausted(ctx context.Context) ([]string, error)
 	PruneCompleted(ctx context.Context, queue string, olderThan time.Duration) (int, error)
 	Complete(ctx context.Context, jobID, workerID string, result []byte) error
 	Fail(ctx context.Context, jobID, workerID string, cause error) error
@@ -31,6 +33,10 @@ type Store interface {
 	RetryDeadLetter(ctx context.Context, jobID string) (Job, error)
 	Replay(ctx context.Context, jobID string) (Job, error)
 	Get(ctx context.Context, jobID string) (Job, []Event, error)
+	// RecordEvent appends an operator-visible event to a job's history
+	// without any lease checks, for outcomes recorded outside execution
+	// (compensation results).
+	RecordEvent(ctx context.Context, jobID, eventType string, details []byte) error
 	List(ctx context.Context, opts ListOptions) ([]Job, error)
 	QueueDepth(ctx context.Context) ([]QueueDepth, error)
 }

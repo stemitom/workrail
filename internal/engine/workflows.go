@@ -17,8 +17,9 @@ type WorkflowFunc func(context.Context, json.RawMessage) (json.RawMessage, error
 type ActivityFunc = WorkflowFunc
 
 type Registry struct {
-	workflows  map[string]WorkflowFunc
-	activities map[string]ActivityFunc
+	workflows     map[string]WorkflowFunc
+	activities    map[string]ActivityFunc
+	compensations map[string]WorkflowFunc
 }
 
 func NewRegistry() *Registry {

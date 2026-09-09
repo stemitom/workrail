@@ -141,8 +141,16 @@ func (s *fakeStore) Heartbeat(context.Context, string, string, time.Duration) er
 	return nil
 }
 
-func (s *fakeStore) DeadLetterExhausted(context.Context) (int, error) {
-	return 0, nil
+func (s *fakeStore) DeadLetterExhausted(context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) RecordEvent(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (s *fakeStore) GetJob(context.Context, string) (engine.Job, error) {
+	return engine.Job{}, engine.ErrNotFound
 }
 
 func (s *fakeStore) GetStep(context.Context, string, string) (json.RawMessage, bool, error) {

@@ -138,14 +138,14 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 	return jobs, nil
 }
 
-func (s *Store) DeadLetterExhausted(ctx context.Context) (int, error) {
-	count := 0
+func (s *Store) DeadLetterExhausted(ctx context.Context) ([]string, error) {
+	var deadLettered []string
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		held, err := tryAdvisoryLock(ctx, tx, "workrail:dead_letter_sweep")
 		if err != nil || !held {
 			return err
 		}
-		deadLettered, err := queryStrings(ctx, tx, `
+		deadLettered, err = queryStrings(ctx, tx, `
 			WITH exhausted AS (
 				SELECT id
 				FROM jobs
@@ -171,10 +171,9 @@ func (s *Store) DeadLetterExhausted(ctx context.Context) (int, error) {
 				return err
 			}
 		}
-		count = len(deadLettered)
 		return nil
 	})
-	return count, err
+	return deadLettered, err
 }
 
 // pruneBatchSize bounds each retention delete so a large backlog cannot hold
@@ -508,6 +507,22 @@ func (s *Store) Get(ctx context.Context, jobID string) (engine.Job, []engine.Eve
 	}
 	events, err := s.events(ctx, jobID)
 	return job, events, err
+}
+
+// GetJob reads a job without its events, for waiters polling a child's
+// status. Use Get for the full operator view.
+func (s *Store) GetJob(ctx context.Context, jobID string) (engine.Job, error) {
+	job, _, err := s.Get(ctx, jobID)
+	return job, err
+}
+
+func (s *Store) RecordEvent(ctx context.Context, jobID, eventType string, details []byte) error {
+	if len(details) == 0 {
+		details = []byte(`{}`)
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO job_events (job_id, event_type, details) VALUES ($1, $2, $3)`,
+		jobID, eventType, json.RawMessage(details))
+	return err
 }
 
 func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job, error) {

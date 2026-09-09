@@ -10,7 +10,7 @@ import (
 
 func TestWaitSignalSuspendsWhenEmpty(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	_, err := WaitSignal(ctx, "approval")
 	var suspend *SuspendError
@@ -24,7 +24,7 @@ func TestWaitSignalSuspendsWhenEmpty(t *testing.T) {
 
 func TestWaitSignalDeliversOnce(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	if err := store.Signal(context.Background(), "job-1", "approval", json.RawMessage(`{"ok":true}`), ""); err != nil {
 		t.Fatalf("signal: %v", err)
@@ -59,7 +59,7 @@ func TestWaitSignalNeedsWorker(t *testing.T) {
 
 func TestSignalIdempotencyKeyDedupes(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	first := json.RawMessage(`{"n":1}`)
 	for range 2 {
@@ -84,7 +84,7 @@ func TestSignalIdempotencyKeyDedupes(t *testing.T) {
 
 func TestWaitSignalAtConsumesStreamInOrder(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	for _, payload := range []string{`{"n":1}`, `{"n":2}`} {
 		if err := store.Signal(context.Background(), "job-1", "vote", []byte(payload), ""); err != nil {

@@ -164,6 +164,42 @@ by default) reclaims it. If anything is missed the wait naps 5 seconds
 between mailbox checks, costing no slot and no retry attempt.
 Signaling a finished job fails, as does signaling an unknown one.
 
+## Child Workflows
+
+A workflow can call a whole other workflow and wait for its result:
+
+```go
+result, err := workrail.ExecuteChild[Settlement](ctx, "settle", "settlement", settlementJob{PayoutID: job.PayoutID})
+if err != nil {
+	return nil, err
+}
+```
+
+The child is a real job with its own attempt budget and checkpoints, running
+on the parent's queue; the parent suspends without holding a slot until the
+child succeeds. The child identity is checkpointed, so resumed runs and
+retries watch the same child instead of spawning another. A dead-lettered or
+canceled child fails the parent permanently — retrying would only re-watch a
+finished child.
+
+## Compensation
+
+Register an unwind hook per workflow type and it runs once when a job of that
+type dead-letters — whether attempts ran out or the lease-expiry sweep
+reaped a crash-looping job:
+
+```go
+client.RegisterCompensation("payout", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+	return nil, ledger.Release(ctx, payoutID)
+})
+```
+
+Compensations run outside any lease, so they cannot use `Step`, `Sleep`, or
+`WaitSignal`: keep them to plain idempotent activities. Outcomes land in the
+event history as `job.compensated` / `job.compensation_failed`. Types without
+a hook dead-letter silently, as before. There is no cancel propagation to
+children: each job stands on its own.
+
 ## Dashboard
 
 The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).

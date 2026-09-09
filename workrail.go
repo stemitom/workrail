@@ -111,6 +111,12 @@ func (c *Client) RegisterActivity(name string, fn ActivityFunc) {
 	c.registry.RegisterActivity(name, fn)
 }
 
+// RegisterCompensation adds the unwind hook run once when a job of the given
+// type dead-letters. See engine.RegisterCompensation for the contract.
+func (c *Client) RegisterCompensation(workflowType string, fn WorkflowFunc) {
+	c.registry.RegisterCompensation(workflowType, fn)
+}
+
 func (c *Client) Enqueue(ctx context.Context, req EnqueueRequest) (Job, bool, error) {
 	return c.store.Enqueue(ctx, req)
 }
@@ -260,6 +266,25 @@ func ExecuteActivity[T any](ctx context.Context, name string, input any) (T, err
 	}
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return value, fmt.Errorf("activity %q: decode result: %w", name, err)
+	}
+	return value, nil
+}
+
+// ExecuteChild enqueues a child workflow and waits for its result without
+// holding a worker slot. See engine.ExecuteChild for the suspend/resume
+// contract: names must be stable and unique per child.
+func ExecuteChild[T any](ctx context.Context, name, workflowType string, input any) (T, error) {
+	var value T
+	data, err := json.Marshal(input)
+	if err != nil {
+		return value, err
+	}
+	raw, err := engine.ExecuteChild(ctx, name, workflowType, data)
+	if err != nil {
+		return value, err
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, fmt.Errorf("child %q: decode result: %w", name, err)
 	}
 	return value, nil
 }

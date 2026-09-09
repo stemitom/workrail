@@ -10,7 +10,7 @@ import (
 
 func TestSleepSuspendsThenResumes(t *testing.T) {
 	store := &workerTestStore{}
-	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a")
+	ctx := WithStepRunner(context.Background(), store, "job-1", "worker-a", "")
 
 	err := Sleep(ctx, "settle", time.Hour)
 	var suspend *SuspendError
