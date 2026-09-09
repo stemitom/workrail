@@ -38,6 +38,9 @@ func TestExecuteChildStableIdentity(t *testing.T) {
 		if job.Queue != "default" || job.WorkflowType != "settlement" {
 			t.Fatalf("child = %+v, want default/settlement", job)
 		}
+		if job.ParentID == nil || *job.ParentID != "parent-1" {
+			t.Fatalf("child parent = %v, want parent-1", job.ParentID)
+		}
 	}
 }
 

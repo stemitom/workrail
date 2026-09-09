@@ -202,7 +202,7 @@ children: each job stands on its own.
 
 ## Dashboard
 
-The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
+The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. Jobs waiting on a timer, signal, or child show a parked badge with their wake time; the job view adds the signal mailbox with a send-signal form, parent/children lineage, and colored history for signals, suspensions, permanent failures, and compensations. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
 
 ## Security
 

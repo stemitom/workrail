@@ -33,6 +33,7 @@ func ExecuteChild(ctx context.Context, name, workflowType string, input json.Raw
 			WorkflowType:   workflowType,
 			Payload:        input,
 			IdempotencyKey: "child:" + runner.jobID + ":" + name,
+			ParentID:       runner.jobID,
 		})
 		if err != nil {
 			return nil, err

@@ -883,3 +883,57 @@ func TestIntegrationRecordEvent(t *testing.T) {
 	}
 	t.Fatal("no job.compensated event recorded")
 }
+
+func TestIntegrationParentLineage(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	parent, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "payout"})
+	if err != nil {
+		t.Fatalf("enqueue parent: %v", err)
+	}
+	child, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "settlement",
+		ParentID:     parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("enqueue child: %v", err)
+	}
+
+	got, err := store.GetJob(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if got.ParentID == nil || *got.ParentID != parent.ID {
+		t.Fatalf("child parent = %v, want %s", got.ParentID, parent.ID)
+	}
+
+	children, err := store.List(ctx, engine.ListOptions{ParentID: parent.ID, Limit: 10})
+	if err != nil || len(children) != 1 || children[0].ID != child.ID {
+		t.Fatalf("children = %+v, err = %v, want [%s]", children, err, child.ID)
+	}
+	none, err := store.List(ctx, engine.ListOptions{ParentID: child.ID, Limit: 10})
+	if err != nil || len(none) != 0 {
+		t.Fatalf("leaf children = %+v, want none", none)
+	}
+}
+
+func TestIntegrationListSignalsOrdered(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	job, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "approval"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	for _, name := range []string{"first", "second"} {
+		if err := store.Signal(ctx, job.ID, name, []byte(`{}`), ""); err != nil {
+			t.Fatalf("signal %s: %v", name, err)
+		}
+	}
+	signals, err := store.ListSignals(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("list signals: %v", err)
+	}
+	if len(signals) != 2 || signals[0].Name != "first" || signals[1].Name != "second" {
+		t.Fatalf("signals = %+v, want delivery order", signals)
+	}
+}

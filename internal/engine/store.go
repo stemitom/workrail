@@ -33,6 +33,8 @@ type Store interface {
 	RetryDeadLetter(ctx context.Context, jobID string) (Job, error)
 	Replay(ctx context.Context, jobID string) (Job, error)
 	Get(ctx context.Context, jobID string) (Job, []Event, error)
+	// ListSignals returns a job's mailbox in delivery order.
+	ListSignals(ctx context.Context, jobID string) ([]Signal, error)
 	// RecordEvent appends an operator-visible event to a job's history
 	// without any lease checks, for outcomes recorded outside execution
 	// (compensation results).

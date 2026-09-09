@@ -27,8 +27,62 @@
     <div class="meta-cell"><div class="k">Attempts</div><div class="v">{{$job.Attempt}} of {{$job.MaxAttempts}}</div></div>
     <div class="meta-cell"><div class="k">Created</div><div class="v" title="{{rfc3339 $job.CreatedAt}}">{{timeago $job.CreatedAt}}</div></div>
     <div class="meta-cell"><div class="k">Updated</div><div class="v" title="{{rfc3339 $job.UpdatedAt}}">{{timeago $job.UpdatedAt}}</div></div>
+    {{if isParked $job}}<div class="meta-cell"><div class="k">Parked until</div><div class="v" title="{{rfc3339 $job.RunAfter}}">{{timeago $job.RunAfter}}</div></div>{{end}}
     {{if $job.LeaseOwner}}<div class="meta-cell"><div class="k">Worker</div><div class="v">{{$job.LeaseOwner}}</div></div>{{end}}
     {{if $job.IdempotencyKey}}<div class="meta-cell"><div class="k">Idempotency key</div><div class="v mono">{{$job.IdempotencyKey}}</div></div>{{end}}
+    {{with $d.Parent}}<div class="meta-cell"><div class="k">Parent</div><div class="v"><a class="id-link mono" href="/ui/jobs/{{.ID}}">{{.WorkflowType}} · {{shortID .ID}}</a></div></div>{{end}}
+  </div>
+</section>
+
+{{if $d.Children}}
+<section>
+  <h2>Children ({{len $d.Children}})</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range $d.Children}}
+        <tr>
+          <td><a class="id-link mono" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
+          <td>{{.WorkflowType}}</td>
+          <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
+          <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
+{{if $d.Signals}}
+<section>
+  <h2>Signals ({{len $d.Signals}})</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Name</th><th>Payload</th><th>When</th></tr></thead>
+      <tbody>
+        {{range $d.Signals}}
+        <tr>
+          <td class="mono">{{.Name}}</td>
+          <td class="mono">{{compactJSON .Payload}}</td>
+          <td class="when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
+<section>
+  <h2>Send signal</h2>
+  <div class="card">
+    <form method="post" action="/ui/jobs/{{$job.ID}}/signal" class="filters">
+      <input name="name" placeholder="signal name" required>
+      <input name="payload" placeholder='payload JSON, e.g. {"ok":true}' value="{}">
+      <button class="btn" type="submit">Send</button>
+    </form>
   </div>
 </section>
 
@@ -70,8 +124,9 @@
       <thead><tr><th>Event</th><th>Details</th><th>When</th></tr></thead>
       <tbody>
         {{range $d.Events}}
+        {{$t := .EventType}}
         <tr>
-          <td>{{.EventType}}</td>
+          <td>{{with eventClass $t}}<span class="pill {{.}}"><span class="sdot"></span>{{$t}}</span>{{else}}{{$t}}{{end}}{{if isPermanent .Details}} <span class="pill st-failed"><span class="sdot"></span>permanent</span>{{end}}</td>
           <td class="mono">{{compactJSON .Details}}</td>
           <td class="when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</td>
         </tr>

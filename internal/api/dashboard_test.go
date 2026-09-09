@@ -8,7 +8,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stemitom/workrail/internal/engine"
 	"github.com/stemitom/workrail/internal/redact"
 )
 
@@ -217,5 +219,36 @@ func TestDashboardRedactsConfiguredFields(t *testing.T) {
 	}
 	if apiBody := readBody(t, resp); !strings.Contains(apiBody, "u_1") {
 		t.Fatalf("JSON API should not redact, got %.200s", apiBody)
+	}
+}
+
+func TestDashboardJobShowsLineageAndMailbox(t *testing.T) {
+	parentID := fakeJob().ID
+	childID := "0b81a3a2-9d9a-4a41-b9d3-000000000042"
+	child := fakeJob()
+	child.ID = childID
+	child.WorkflowType = "settlement"
+	child.ParentID = &parentID
+	parent := fakeJob()
+	parent.RunAfter = time.Now().Add(time.Hour)
+	parent.Status = engine.StatusQueued
+	store := &fakeStore{
+		getJob:  &parent,
+		jobs:    []engine.Job{parent, child},
+		signals: []engine.Signal{{ID: 1, JobID: parentID, Name: "approval"}},
+	}
+	server := New(store, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/ui/jobs/" + parentID)
+	if err != nil {
+		t.Fatalf("get job page: %v", err)
+	}
+	body := readBody(t, resp)
+	for _, want := range []string{"Parked until", "Children (1)", "settlement", "Signals (1)", "approval", "Send signal"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("job page missing %q", want)
+		}
 	}
 }

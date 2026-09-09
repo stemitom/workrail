@@ -105,6 +105,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /jobs/{id}/replay", s.replay)
 	s.mux.HandleFunc("POST /jobs/{id}/retry", s.retryDeadLetter)
 	s.mux.HandleFunc("POST /jobs/{id}/signals", s.signal)
+	s.mux.HandleFunc("GET /jobs/{id}/signals", s.listSignals)
 	s.mux.Handle("GET /metrics", promhttp.Handler())
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -118,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /ui/jobs/{id}/retry", s.uiRetry)
 	s.mux.HandleFunc("POST /ui/jobs/{id}/cancel", s.uiCancel)
 	s.mux.HandleFunc("POST /ui/jobs/{id}/replay", s.uiReplay)
+	s.mux.HandleFunc("POST /ui/jobs/{id}/signal", s.uiSignal)
 	s.mux.HandleFunc("GET /ui/login", s.uiLoginForm)
 	s.mux.HandleFunc("POST /ui/login", s.uiLogin)
 	s.mux.HandleFunc("POST /ui/logout", s.uiLogout)
@@ -149,6 +151,11 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	parentID := r.URL.Query().Get("parent_id")
+	if parentID != "" && len(parentID) != 36 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid parent_id"))
+		return
+	}
 	jobs, err := s.store.List(r.Context(), engine.ListOptions{
 		Limit:           limit,
 		Queue:           r.URL.Query().Get("queue"),
@@ -156,6 +163,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		WorkflowType:    r.URL.Query().Get("type"),
 		BeforeCreatedAt: before,
 		BeforeID:        beforeID,
+		ParentID:        parentID,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -246,6 +254,18 @@ func (s *Server) signal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "signaled"})
+}
+
+func (s *Server) listSignals(w http.ResponseWriter, r *http.Request) {
+	signals, err := s.store.ListSignals(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if signals == nil {
+		signals = []engine.Signal{}
+	}
+	writeJSON(w, http.StatusOK, signals)
 }
 
 func sameOrigin(r *http.Request) bool {

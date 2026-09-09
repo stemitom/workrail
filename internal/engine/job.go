@@ -27,11 +27,14 @@ type Job struct {
 	Payload        json.RawMessage `json:"payload"`
 	Status         Status          `json:"status"`
 	IdempotencyKey *string         `json:"idempotency_key,omitempty"`
-	Attempt        int             `json:"attempt"`
-	MaxAttempts    int             `json:"max_attempts"`
-	RunAfter       time.Time       `json:"run_after"`
-	LeaseOwner     *string         `json:"lease_owner,omitempty"`
-	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
+	// ParentID links a child workflow to the job that spawned it. Children
+	// stand alone: no cascade, no cancel propagation.
+	ParentID       *string    `json:"parent_id,omitempty"`
+	Attempt        int        `json:"attempt"`
+	MaxAttempts    int        `json:"max_attempts"`
+	RunAfter       time.Time  `json:"run_after"`
+	LeaseOwner     *string    `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 	// WakeVersion tracks signal wake-ups: Claim hands it out, Signal bumps
 	// it, Suspend only parks on a match (see Store.Suspend). Internal fence
 	// token, not API surface.
@@ -55,6 +58,15 @@ type Event struct {
 
 type QueueDepth = observability.QueueDepth
 
+// Signal is one mailbox delivery to a job.
+type Signal struct {
+	ID        int64           `json:"id"`
+	JobID     string          `json:"job_id"`
+	Name      string          `json:"name"`
+	Payload   json.RawMessage `json:"payload"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 type EnqueueRequest struct {
 	Queue          string          `json:"queue"`
 	WorkflowType   string          `json:"workflow_type"`
@@ -62,6 +74,7 @@ type EnqueueRequest struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	MaxAttempts    int             `json:"max_attempts"`
 	RunAfter       time.Time       `json:"run_after"`
+	ParentID       string          `json:"parent_id"`
 }
 
 type ClaimOptions struct {
@@ -76,6 +89,8 @@ type ListOptions struct {
 	Queue        string
 	Status       Status
 	WorkflowType string
+	// ParentID restricts to children of one job.
+	ParentID string
 	// BeforeCreatedAt/BeforeID form a keyset cursor: only jobs strictly older
 	// than (created_at, id) are returned. Both must be set together.
 	BeforeCreatedAt time.Time

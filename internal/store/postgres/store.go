@@ -61,13 +61,13 @@ func (s *Store) Enqueue(ctx context.Context, req engine.EnqueueRequest) (engine.
 	inserted := false
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `
-		INSERT INTO jobs (queue, workflow_type, payload, idempotency_key, max_attempts, run_after)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
+		INSERT INTO jobs (queue, workflow_type, payload, idempotency_key, max_attempts, run_after, parent_id)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, '')::uuid)
 		ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = jobs.updated_at
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at,
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at, parent_id,
 			(xmax = 0) AS inserted
-	`, req.Queue, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter).
+	`, req.Queue, req.WorkflowType, req.Payload, req.IdempotencyKey, req.MaxAttempts, req.RunAfter, req.ParentID).
 			Scan(append(jobScanTargets(&job), &inserted)...); err != nil {
 			return err
 		}
@@ -116,7 +116,7 @@ func (s *Store) Claim(ctx context.Context, opts engine.ClaimOptions) ([]engine.J
 		FROM claimable
 		WHERE j.id = claimable.id
 		RETURNING j.id, j.queue, j.workflow_type, j.payload, j.status, j.idempotency_key, j.attempt, j.max_attempts, j.run_after,
-			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.wake_version, j.created_at, j.updated_at, j.completed_at
+			j.lease_owner, j.lease_expires_at, j.heartbeat_at, j.result, j.error, j.trace_id, j.wake_version, j.created_at, j.updated_at, j.completed_at, j.parent_id
 	`, opts.Limit, opts.WorkerID, pgInterval(opts.LeaseDuration), opts.Queue)
 		if err != nil {
 			return err
@@ -385,6 +385,26 @@ func (s *Store) GetSignalAt(ctx context.Context, jobID, name string, index int) 
 	return payload, true, nil
 }
 
+func (s *Store) ListSignals(ctx context.Context, jobID string) ([]engine.Signal, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, job_id, name, payload, created_at
+		FROM job_signals WHERE job_id = $1 ORDER BY id
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var signals []engine.Signal
+	for rows.Next() {
+		var signal engine.Signal
+		if err := rows.Scan(&signal.ID, &signal.JobID, &signal.Name, &signal.Payload, &signal.CreatedAt); err != nil {
+			return nil, err
+		}
+		signals = append(signals, signal)
+	}
+	return signals, rows.Err()
+}
+
 func (s *Store) Complete(ctx context.Context, jobID, workerID string, result []byte) error {
 	if len(result) == 0 {
 		result = []byte(`{}`)
@@ -464,7 +484,7 @@ func (s *Store) RetryDeadLetter(ctx context.Context, jobID string) (engine.Job, 
 			heartbeat_at = NULL, result = NULL, error = NULL, updated_at = now(), completed_at = NULL
 		WHERE id = $1 AND status = 'dead_letter'
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at, parent_id
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -481,7 +501,7 @@ func (s *Store) Replay(ctx context.Context, jobID string) (engine.Job, error) {
 		INSERT INTO jobs (queue, workflow_type, payload, max_attempts)
 		SELECT queue, workflow_type, payload, max_attempts FROM jobs WHERE id = $1
 		RETURNING id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at, parent_id
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -496,7 +516,7 @@ func (s *Store) Get(ctx context.Context, jobID string) (engine.Job, []engine.Eve
 	var job engine.Job
 	err := s.db.QueryRow(ctx, `
 		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at, parent_id
 		FROM jobs WHERE id = $1
 	`, jobID).Scan(jobScanTargets(&job)...)
 	if err != nil {
@@ -538,15 +558,16 @@ func (s *Store) List(ctx context.Context, opts engine.ListOptions) ([]engine.Job
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, queue, workflow_type, payload, status, idempotency_key, attempt, max_attempts, run_after,
-			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at
+			lease_owner, lease_expires_at, heartbeat_at, result, error, trace_id, wake_version, created_at, updated_at, completed_at, parent_id
 		FROM jobs
 		WHERE ($2 = '' OR queue = $2)
 			AND ($3 = '' OR status = $3::job_status)
 			AND ($4 = '' OR workflow_type = $4)
 			AND ($5::timestamptz IS NULL OR (created_at, id) < ($5::timestamptz, $6::uuid))
+			AND (NULLIF($7, '')::uuid IS NULL OR parent_id = NULLIF($7, '')::uuid)
 		ORDER BY created_at DESC, id DESC
 		LIMIT $1
-	`, opts.Limit, opts.Queue, string(opts.Status), opts.WorkflowType, beforeAt, beforeID)
+	`, opts.Limit, opts.Queue, string(opts.Status), opts.WorkflowType, beforeAt, beforeID, opts.ParentID)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +676,7 @@ func jobScanTargets(job *engine.Job) []any {
 	return []any{
 		&job.ID, &job.Queue, &job.WorkflowType, &job.Payload, &job.Status, &job.IdempotencyKey, &job.Attempt, &job.MaxAttempts,
 		&job.RunAfter, &job.LeaseOwner, &job.LeaseExpiresAt, &job.HeartbeatAt, &job.Result, &job.Error,
-		&job.TraceID, &job.WakeVersion, &job.CreatedAt, &job.UpdatedAt, &job.CompletedAt,
+		&job.TraceID, &job.WakeVersion, &job.CreatedAt, &job.UpdatedAt, &job.CompletedAt, &job.ParentID,
 	}
 }
 

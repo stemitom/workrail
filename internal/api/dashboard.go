@@ -116,6 +116,14 @@ func templateFuncs(redactor *redact.Redactor) template.FuncMap {
 		"compactJSON": func(data json.RawMessage) string {
 			return compactJSON(redactor.JSON(data))
 		},
+		"eventClass": eventClass,
+		"isParked":   isParked,
+		"isPermanent": func(details json.RawMessage) bool {
+			var parsed struct {
+				Permanent bool `json:"permanent"`
+			}
+			return json.Unmarshal(details, &parsed) == nil && parsed.Permanent
+		},
 	}
 }
 
@@ -306,8 +314,22 @@ type jobData struct {
 	Job       engine.Job
 	Events    []engine.Event
 	Steps     []engine.StepResult
+	Signals   []engine.Signal
+	Children  []engine.Job
+	Parent    *engine.Job
 	CanRetry  bool
 	CanCancel bool
+}
+
+// isParked reports whether the job is waiting out a timer, signal nap, or
+// delayed start instead of being ready to run.
+func isParked(job engine.Job) bool {
+	switch job.Status {
+	case engine.StatusQueued, engine.StatusRetrying:
+		return job.RunAfter.After(time.Now())
+	default:
+		return false
+	}
 }
 
 func (s *Server) uiJob(w http.ResponseWriter, r *http.Request) {
@@ -321,15 +343,38 @@ func (s *Server) uiJob(w http.ResponseWriter, r *http.Request) {
 		s.uiStoreError(w, err)
 		return
 	}
+	signals, err := s.store.ListSignals(r.Context(), job.ID)
+	if err != nil {
+		s.uiStoreError(w, err)
+		return
+	}
+	children, err := s.store.List(r.Context(), engine.ListOptions{Limit: uiJobsLimit, ParentID: job.ID})
+	if err != nil {
+		s.uiStoreError(w, err)
+		return
+	}
+	data := jobData{
+		Job:       job,
+		Events:    events,
+		Steps:     steps,
+		Signals:   signals,
+		Children:  children,
+		CanRetry:  job.Status == engine.StatusDeadLetter,
+		CanCancel: job.Status == engine.StatusQueued || job.Status == engine.StatusRunning || job.Status == engine.StatusRetrying,
+	}
+	if job.ParentID != nil {
+		parent, _, err := s.store.Get(r.Context(), *job.ParentID)
+		if err != nil && !errors.Is(err, engine.ErrNotFound) {
+			s.uiStoreError(w, err)
+			return
+		}
+		if err == nil {
+			data.Parent = &parent
+		}
+	}
 	s.render(w, "job", http.StatusOK, view{
 		Title: job.WorkflowType, Page: "jobs",
-		Data: jobData{
-			Job:       job,
-			Events:    events,
-			Steps:     steps,
-			CanRetry:  job.Status == engine.StatusDeadLetter,
-			CanCancel: job.Status == engine.StatusQueued || job.Status == engine.StatusRunning || job.Status == engine.StatusRetrying,
-		},
+		Data: data,
 	})
 }
 
@@ -358,6 +403,32 @@ func (s *Server) uiReplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/jobs/"+job.ID, http.StatusSeeOther)
+}
+
+func (s *Server) uiSignal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		s.render(w, "error", http.StatusBadRequest, view{Title: "Error", Data: "That form didn't parse."})
+		return
+	}
+	name := r.FormValue("name")
+	payload := r.FormValue("payload")
+	if payload == "" {
+		payload = "{}"
+	}
+	if name == "" {
+		s.render(w, "error", http.StatusBadRequest, view{Title: "Error", Data: "A signal needs a name."})
+		return
+	}
+	if !json.Valid([]byte(payload)) {
+		s.render(w, "error", http.StatusBadRequest, view{Title: "Error", Data: "That payload isn't valid JSON."})
+		return
+	}
+	if err := s.store.Signal(r.Context(), id, name, json.RawMessage(payload), ""); err != nil {
+		s.uiStoreError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/jobs/"+id, http.StatusSeeOther)
 }
 
 func (s *Server) uiLoginForm(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +497,27 @@ func statusLabel(status engine.Status) string {
 		return "dead letter"
 	default:
 		return string(status)
+	}
+}
+
+// eventClass colors history rows that mark workflow-engine outcomes. Unknown
+// types render as plain text (the pill defaults neutral).
+func eventClass(eventType string) string {
+	switch eventType {
+	case "job.succeeded", "job.compensated":
+		return "st-succeeded"
+	case "job.failed", "job.compensation_failed":
+		return "st-failed"
+	case "job.dead_lettered":
+		return "st-dead_letter"
+	case "job.canceled":
+		return "st-canceled"
+	case "job.signaled":
+		return "st-running"
+	case "job.suspended":
+		return "st-retrying"
+	default:
+		return ""
 	}
 }
 

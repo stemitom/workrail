@@ -236,6 +236,10 @@ func (s *workerTestStore) Enqueue(_ context.Context, req EnqueueRequest) (Job, b
 		key := req.IdempotencyKey
 		job.IdempotencyKey = &key
 	}
+	if req.ParentID != "" {
+		parent := req.ParentID
+		job.ParentID = &parent
+	}
 	s.jobs[job.ID] = job
 	return job, true, nil
 }
@@ -395,6 +399,10 @@ func (s *workerTestStore) Get(_ context.Context, jobID string) (Job, []Event, er
 }
 
 func (s *workerTestStore) List(context.Context, ListOptions) ([]Job, error) {
+	return nil, nil
+}
+
+func (s *workerTestStore) ListSignals(context.Context, string) ([]Signal, error) {
 	return nil, nil
 }
 

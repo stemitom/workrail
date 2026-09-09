@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,78 @@ type fakeStore struct {
 	listCount int
 	signalErr error
 	signaled  struct{ jobID, name string }
+	jobs      []engine.Job
+	signals   []engine.Signal
+	getJob    *engine.Job
+}
+
+func TestListSignalsEndpoint(t *testing.T) {
+	store := &fakeStore{signals: []engine.Signal{
+		{ID: 1, JobID: fakeJob().ID, Name: "approval", Payload: json.RawMessage(`{"ok":true}`)},
+	}}
+	server := New(store, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/jobs/" + fakeJob().ID + "/signals")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "approval") {
+		t.Fatalf("status = %d, body = %.200s", resp.StatusCode, body)
+	}
+}
+
+func TestListParentFilter(t *testing.T) {
+	server := New(&fakeStore{}, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/jobs?parent_id=not-a-uuid")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	resp, err = ts.Client().Get(ts.URL + "/jobs?parent_id=0b81a3a2-9d9a-4a41-b9d3-000000000001")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestUISignalAction(t *testing.T) {
+	store := &fakeStore{}
+	server := New(store, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	form := url.Values{"name": {"approval"}, "payload": {`{"ok":true}`}}
+	resp, err := ts.Client().PostForm(ts.URL+"/ui/jobs/"+fakeJob().ID+"/signal", form)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if store.signaled.jobID != fakeJob().ID || store.signaled.name != "approval" {
+		t.Fatalf("signaled = %+v, want job approval", store.signaled)
+	}
+
+	resp, err = ts.Client().PostForm(ts.URL+"/ui/jobs/"+fakeJob().ID+"/signal", url.Values{})
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("nameless signal status = %d, want 400", resp.StatusCode)
+	}
 }
 
 func fakeJob() engine.Job {
@@ -208,17 +281,36 @@ func (s *fakeStore) Get(context.Context, string) (engine.Job, []engine.Event, er
 	events := []engine.Event{
 		{ID: 1, JobID: fakeJob().ID, EventType: "job.enqueued", Details: json.RawMessage(`{}`), CreatedAt: time.Now().Add(-time.Hour)},
 	}
+	if s.getJob != nil {
+		return *s.getJob, events, nil
+	}
 	return fakeJob(), events, nil
 }
 
-func (s *fakeStore) List(context.Context, engine.ListOptions) ([]engine.Job, error) {
-	jobs := []engine.Job{fakeJob()}
-	for i := 1; i < s.listCount; i++ {
-		job := fakeJob()
-		job.ID = fmt.Sprintf("0b81a3a2-9d9a-4a41-b9d3-%012d", i)
-		jobs = append(jobs, job)
+func (s *fakeStore) List(_ context.Context, opts engine.ListOptions) ([]engine.Job, error) {
+	jobs := s.jobs
+	if jobs == nil {
+		jobs = []engine.Job{fakeJob()}
+		for i := 1; i < s.listCount; i++ {
+			job := fakeJob()
+			job.ID = fmt.Sprintf("0b81a3a2-9d9a-4a41-b9d3-%012d", i)
+			jobs = append(jobs, job)
+		}
+	}
+	if opts.ParentID != "" {
+		var children []engine.Job
+		for _, job := range jobs {
+			if job.ParentID != nil && *job.ParentID == opts.ParentID {
+				children = append(children, job)
+			}
+		}
+		return children, nil
 	}
 	return jobs, nil
+}
+
+func (s *fakeStore) ListSignals(context.Context, string) ([]engine.Signal, error) {
+	return s.signals, nil
 }
 
 func (s *fakeStore) QueueDepth(context.Context) ([]engine.QueueDepth, error) {

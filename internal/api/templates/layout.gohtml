@@ -224,7 +224,7 @@ pre.json {
       <td><a class="mono id-link" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
       <td>{{.WorkflowType}}</td>
       <td>{{.Queue}}</td>
-      <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
+      <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span>{{if isParked .}} <span class="pill st-retrying"><span class="sdot"></span>parked</span>{{end}}</td>
       <td class="num">{{.Attempt}}/{{.MaxAttempts}}</td>
       <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
     </tr>
