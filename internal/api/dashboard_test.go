@@ -261,3 +261,27 @@ func TestDashboardJobShowsLineageAndMailbox(t *testing.T) {
 		t.Fatal("execution path is not chronological")
 	}
 }
+
+func TestDashboardOverviewLeadsWithAttention(t *testing.T) {
+	store := &fakeStore{parked: 3}
+	server := New(store, slog.Default(), Options{AuthToken: ""})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/ui")
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+	body := readBody(t, resp)
+	for _, want := range []string{"Needs attention", "parked", ">3<", "All dead letters"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("overview missing %q", want)
+		}
+	}
+	// Dead-letter tile leads the execution tiles.
+	dl := strings.Index(body, ">dead letter</div>")
+	running := strings.Index(body, ">running</div>")
+	if dl < 0 || running < 0 || dl > running {
+		t.Fatal("dead-letter tile should lead the tiles")
+	}
+}

@@ -41,4 +41,7 @@ type Store interface {
 	RecordEvent(ctx context.Context, jobID, eventType string, details []byte) error
 	List(ctx context.Context, opts ListOptions) ([]Job, error)
 	QueueDepth(ctx context.Context) ([]QueueDepth, error)
+	// ParkedCount reports jobs waiting out a timer, signal nap, or delayed
+	// start: queued or retrying with a future run_after.
+	ParkedCount(ctx context.Context) (int64, error)
 }

@@ -174,9 +174,11 @@ func (s *Server) uiStoreError(w http.ResponseWriter, err error) {
 }
 
 type overviewData struct {
-	Tiles  []depthSegment
-	Queues []queueDepthView
-	Jobs   []engine.Job
+	Tiles     []depthSegment
+	Queues    []queueDepthView
+	Jobs      []engine.Job
+	Attention []engine.Job
+	Parked    int64
 }
 
 type queueDepthView struct {
@@ -203,13 +205,23 @@ func (s *Server) uiOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	attention, err := s.store.List(r.Context(), engine.ListOptions{Limit: 10, Status: engine.StatusDeadLetter})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	parked, err := s.store.ParkedCount(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.render(w, "overview", http.StatusOK, view{
 		Title: "Overview", Page: "overview",
-		Data: buildOverview(depths, jobs),
+		Data: buildOverview(depths, jobs, attention, parked),
 	})
 }
 
-func buildOverview(depths []engine.QueueDepth, jobs []engine.Job) overviewData {
+func buildOverview(depths []engine.QueueDepth, jobs, attention []engine.Job, parked int64) overviewData {
 	totals := map[engine.Status]int64{}
 	byQueue := map[string]map[engine.Status]int64{}
 	var queueOrder []string
@@ -223,10 +235,12 @@ func buildOverview(depths []engine.QueueDepth, jobs []engine.Job) overviewData {
 		byQueue[d.Queue][status] += d.Count
 	}
 
-	data := overviewData{Jobs: jobs}
-	for _, status := range []engine.Status{engine.StatusQueued, engine.StatusRunning, engine.StatusDeadLetter, engine.StatusSucceeded} {
+	data := overviewData{Jobs: jobs, Attention: attention, Parked: parked}
+	for _, status := range []engine.Status{engine.StatusDeadLetter, engine.StatusRunning} {
 		data.Tiles = append(data.Tiles, depthSegment{Label: statusLabel(status), Class: statusClass(status), Count: totals[status]})
 	}
+	data.Tiles = append(data.Tiles, depthSegment{Label: "parked", Class: "st-retrying", Count: parked})
+	data.Tiles = append(data.Tiles, depthSegment{Label: statusLabel(engine.StatusSucceeded), Class: statusClass(engine.StatusSucceeded), Count: totals[engine.StatusSucceeded]})
 	for _, queue := range queueOrder {
 		counts := byQueue[queue]
 		qv := queueDepthView{Name: queue}
@@ -405,7 +419,8 @@ func buildTimeline(job engine.Job, steps []engine.StepResult, signals []engine.S
 }
 
 // isParked reports whether the job is waiting out a timer, signal nap, or
-// delayed start instead of being ready to run.
+// delayed start instead of being ready to run. Mirrors ParkedCount in the
+// postgres store: change both together.
 func isParked(job engine.Job) bool {
 	switch job.Status {
 	case engine.StatusQueued, engine.StatusRetrying:

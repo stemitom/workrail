@@ -937,3 +937,35 @@ func TestIntegrationListSignalsOrdered(t *testing.T) {
 		t.Fatalf("signals = %+v, want delivery order", signals)
 	}
 }
+
+func TestIntegrationParkedCount(t *testing.T) {
+	store, ctx := integrationStore(t)
+
+	if _, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "now"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, _, err := store.Enqueue(ctx, engine.EnqueueRequest{
+		WorkflowType: "later",
+		RunAfter:     time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("enqueue delayed: %v", err)
+	}
+	// A failed attempt backoffs into the future: retrying waits count too.
+	retrying, _, err := store.Enqueue(ctx, engine.EnqueueRequest{WorkflowType: "flaky"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, engine.ClaimOptions{WorkerID: "worker-a", LeaseDuration: time.Minute, Limit: 10}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := store.Fail(ctx, retrying.ID, "worker-a", errors.New("boom")); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	count, err := store.ParkedCount(ctx)
+	if err != nil {
+		t.Fatalf("parked count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("parked = %d, want 2 (delayed + backoff)", count)
+	}
+}

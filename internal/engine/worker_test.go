@@ -409,3 +409,7 @@ func (s *workerTestStore) ListSignals(context.Context, string) ([]Signal, error)
 func (s *workerTestStore) QueueDepth(context.Context) ([]QueueDepth, error) {
 	return nil, nil
 }
+
+func (s *workerTestStore) ParkedCount(context.Context) (int64, error) {
+	return 0, nil
+}

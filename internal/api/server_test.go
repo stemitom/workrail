@@ -121,6 +121,7 @@ type fakeStore struct {
 	jobs      []engine.Job
 	signals   []engine.Signal
 	getJob    *engine.Job
+	parked    int64
 }
 
 func TestListSignalsEndpoint(t *testing.T) {
@@ -306,6 +307,15 @@ func (s *fakeStore) List(_ context.Context, opts engine.ListOptions) ([]engine.J
 		}
 		return children, nil
 	}
+	if opts.Status != "" {
+		var filtered []engine.Job
+		for _, job := range jobs {
+			if job.Status == opts.Status {
+				filtered = append(filtered, job)
+			}
+		}
+		return filtered, nil
+	}
 	return jobs, nil
 }
 
@@ -320,4 +330,8 @@ func (s *fakeStore) QueueDepth(context.Context) ([]engine.QueueDepth, error) {
 		{Queue: "emails", Status: string(engine.StatusDeadLetter), Count: 1},
 		{Queue: "billing", Status: string(engine.StatusSucceeded), Count: 12},
 	}, nil
+}
+
+func (s *fakeStore) ParkedCount(context.Context) (int64, error) {
+	return s.parked, nil
 }

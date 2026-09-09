@@ -598,6 +598,18 @@ func (s *Store) QueueDepth(ctx context.Context) ([]engine.QueueDepth, error) {
 	return depths, rows.Err()
 }
 
+// ParkedCount reports jobs waiting out a timer, signal nap, or delayed
+// start rather than ready to run. Mirrors isParked in the dashboard: change
+// both together.
+func (s *Store) ParkedCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.QueryRow(ctx, `
+		SELECT count(*) FROM jobs
+		WHERE status IN ('queued', 'retrying') AND run_after > now()
+	`).Scan(&count)
+	return count, err
+}
+
 func (s *Store) events(ctx context.Context, jobID string) ([]engine.Event, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, job_id, event_type, details, created_at

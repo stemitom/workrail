@@ -1,7 +1,7 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Overview</h1>
-<p class="subtitle">Queues and recent activity, updating live.</p>
+<p class="subtitle">Runs needing attention, queues and recent activity, updating live.</p>
 
 <section class="tiles" data-poll="tiles">
   {{range $d.Tiles}}
@@ -11,6 +11,16 @@
   </div>
   {{end}}
 </section>
+
+{{if $d.Attention}}
+<section>
+  <h2>Needs attention</h2>
+  <div class="card" data-poll="attention">
+    {{template "jobtable" $d.Attention}}
+    <div class="pager"><span class="spacer"></span><a class="btn" href="/ui/jobs?status=dead_letter">All dead letters →</a></div>
+  </div>
+</section>
+{{end}}
 
 <section>
   <h2>Queues</h2>
