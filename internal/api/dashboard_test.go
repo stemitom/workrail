@@ -229,13 +229,14 @@ func TestDashboardJobShowsLineageAndMailbox(t *testing.T) {
 	child.ID = childID
 	child.WorkflowType = "settlement"
 	child.ParentID = &parentID
+	child.CreatedAt = time.Now().Add(-10 * time.Minute)
 	parent := fakeJob()
 	parent.RunAfter = time.Now().Add(time.Hour)
 	parent.Status = engine.StatusQueued
 	store := &fakeStore{
 		getJob:  &parent,
 		jobs:    []engine.Job{parent, child},
-		signals: []engine.Signal{{ID: 1, JobID: parentID, Name: "approval"}},
+		signals: []engine.Signal{{ID: 1, JobID: parentID, Name: "approval", CreatedAt: time.Now().Add(-5 * time.Minute)}},
 	}
 	server := New(store, slog.Default(), Options{AuthToken: ""})
 	ts := httptest.NewServer(server.Handler())
@@ -246,9 +247,17 @@ func TestDashboardJobShowsLineageAndMailbox(t *testing.T) {
 		t.Fatalf("get job page: %v", err)
 	}
 	body := readBody(t, resp)
-	for _, want := range []string{"Parked until", "Children (1)", "settlement", "Signals (1)", "approval", "Send signal"} {
+	for _, want := range []string{"Parked until", "Execution path", "Step compose", "settlement", "Signal approval", "Send signal"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("job page missing %q", want)
 		}
+	}
+	// Steps, signals, and children merged chronologically: the child predates
+	// the signal, which predates the step checkpoint.
+	childAt := strings.Index(body, "Child settlement")
+	signalAt := strings.Index(body, "Signal approval")
+	composeAt := strings.Index(body, "Step compose")
+	if !(childAt < signalAt && signalAt < composeAt) {
+		t.Fatal("execution path is not chronological")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -313,12 +314,94 @@ func (s *Server) uiJobs(w http.ResponseWriter, r *http.Request) {
 type jobData struct {
 	Job       engine.Job
 	Events    []engine.Event
-	Steps     []engine.StepResult
-	Signals   []engine.Signal
-	Children  []engine.Job
+	Timeline  []timelineEntry
 	Parent    *engine.Job
 	CanRetry  bool
 	CanCancel bool
+}
+
+// timelineEntry is one beat of a run's execution path: what happened, when,
+// and the data or link to see more. Built from steps, signals, children, and
+// the curated engine events — never the raw claim/heartbeat noise.
+type timelineEntry struct {
+	At       time.Time
+	Title    string
+	Text     string
+	Data     json.RawMessage
+	Link     string
+	LinkText string
+	Class    string
+	Badge    string
+}
+
+// buildTimeline merges a run's steps, received signals, spawned children, and
+// engine outcomes into one chronological path, Temporal-compact-view style.
+func buildTimeline(job engine.Job, steps []engine.StepResult, signals []engine.Signal, children []engine.Job, events []engine.Event) []timelineEntry {
+	entries := []timelineEntry{
+		{At: job.CreatedAt, Title: "Run started", Text: "queue " + job.Queue, Class: "st-queued"},
+	}
+	for _, step := range steps {
+		entries = append(entries, timelineEntry{
+			At: step.CreatedAt, Title: "Step " + step.Name,
+			Data: step.Result, Class: "st-succeeded",
+		})
+	}
+	for _, signal := range signals {
+		entries = append(entries, timelineEntry{
+			At: signal.CreatedAt, Title: "Signal " + signal.Name,
+			Data: signal.Payload, Class: "st-running",
+		})
+	}
+	for _, child := range children {
+		entries = append(entries, timelineEntry{
+			At: child.CreatedAt, Title: "Child " + child.WorkflowType,
+			Text: statusLabel(child.Status), Link: "/ui/jobs/" + child.ID, LinkText: shortID(child.ID),
+			Class: statusClass(child.Status),
+		})
+	}
+	for _, event := range events {
+		class := eventClass(event.EventType)
+		switch event.EventType {
+		case "job.suspended":
+			var details struct {
+				RunAfter time.Time `json:"run_after"`
+			}
+			title := "Waiting"
+			if json.Unmarshal(event.Details, &details) == nil && !details.RunAfter.IsZero() {
+				title = "Waiting until " + details.RunAfter.UTC().Format(time.RFC3339)
+			}
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: title, Class: class})
+		case "job.failed":
+			var details struct {
+				Error     string `json:"error"`
+				Permanent bool   `json:"permanent"`
+			}
+			_ = json.Unmarshal(event.Details, &details)
+			entry := timelineEntry{At: event.CreatedAt, Title: "Attempt failed", Text: details.Error, Class: class}
+			if details.Permanent {
+				entry.Badge = "permanent"
+			}
+			entries = append(entries, entry)
+		case "job.compensated":
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Compensated", Class: class})
+		case "job.compensation_failed":
+			var details struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(event.Details, &details)
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Compensation failed", Text: details.Error, Class: class})
+		case "job.dead_lettered":
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Dead-lettered", Class: class})
+		case "job.dlq_retried":
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Retried from dead letter", Class: class})
+		case "job.canceled":
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Canceled", Class: class})
+		case "job.succeeded":
+			entries = append(entries, timelineEntry{At: event.CreatedAt, Title: "Succeeded", Class: class})
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].At.Before(entries[j].At) })
+	return entries
 }
 
 // isParked reports whether the job is waiting out a timer, signal nap, or
@@ -356,9 +439,7 @@ func (s *Server) uiJob(w http.ResponseWriter, r *http.Request) {
 	data := jobData{
 		Job:       job,
 		Events:    events,
-		Steps:     steps,
-		Signals:   signals,
-		Children:  children,
+		Timeline:  buildTimeline(job, steps, signals, children, events),
 		CanRetry:  job.Status == engine.StatusDeadLetter,
 		CanCancel: job.Status == engine.StatusQueued || job.Status == engine.StatusRunning || job.Status == engine.StatusRetrying,
 	}
@@ -514,7 +595,7 @@ func eventClass(eventType string) string {
 		return "st-canceled"
 	case "job.signaled":
 		return "st-running"
-	case "job.suspended":
+	case "job.suspended", "job.dlq_retried":
 		return "st-retrying"
 	default:
 		return ""

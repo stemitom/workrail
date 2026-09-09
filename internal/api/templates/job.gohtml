@@ -34,43 +34,21 @@
   </div>
 </section>
 
-{{if $d.Children}}
+{{if $d.Timeline}}
 <section>
-  <h2>Children ({{len $d.Children}})</h2>
+  <h2>Execution path</h2>
   <div class="card">
-    <table>
-      <thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Updated</th></tr></thead>
-      <tbody>
-        {{range $d.Children}}
-        <tr>
-          <td><a class="id-link mono" href="/ui/jobs/{{.ID}}">{{shortID .ID}}</a></td>
-          <td>{{.WorkflowType}}</td>
-          <td><span class="pill {{statusClass .Status}}"><span class="sdot"></span>{{statusLabel .Status}}</span></td>
-          <td class="when" title="{{rfc3339 .UpdatedAt}}">{{timeago .UpdatedAt}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-</section>
-{{end}}
-
-{{if $d.Signals}}
-<section>
-  <h2>Signals ({{len $d.Signals}})</h2>
-  <div class="card">
-    <table>
-      <thead><tr><th>Name</th><th>Payload</th><th>When</th></tr></thead>
-      <tbody>
-        {{range $d.Signals}}
-        <tr>
-          <td class="mono">{{.Name}}</td>
-          <td class="mono">{{compactJSON .Payload}}</td>
-          <td class="when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+    {{range $d.Timeline}}
+    <div class="tl-row">
+      <span class="tl-check {{.Class}}">●</span>
+      <div class="tl-body">
+        <span class="tl-name">{{.Title}}</span>{{if .Link}} <a class="id-link mono" href="{{.Link}}">{{.LinkText}}</a>{{end}}{{if .Badge}} <span class="pill st-failed"><span class="sdot"></span>{{.Badge}}</span>{{end}}
+        {{if .Text}}<div>{{.Text}}</div>{{end}}
+        {{if .Data}}<details><summary>Data</summary><pre class="json">{{prettyJSON .Data}}</pre></details>{{end}}
+      </div>
+      <span class="tl-when" title="{{rfc3339 .At}}">{{timeago .At}}</span>
+    </div>
+    {{end}}
   </div>
 </section>
 {{end}}
@@ -85,24 +63,6 @@
     </form>
   </div>
 </section>
-
-{{if $d.Steps}}
-<section>
-  <h2>Steps</h2>
-  <div class="card">
-    {{range $d.Steps}}
-    <div class="step-row">
-      <span class="step-check">✓</span>
-      <div class="step-body">
-        <span class="step-name">{{.Name}}</span>
-        <details><summary>Result</summary><pre class="json">{{prettyJSON .Result}}</pre></details>
-      </div>
-      <span class="step-when" title="{{rfc3339 .CreatedAt}}">{{timeago .CreatedAt}}</span>
-    </div>
-    {{end}}
-  </div>
-</section>
-{{end}}
 
 <section>
   <h2>Payload</h2>
