@@ -1,81 +1,11 @@
 # Workrail
 
-A mini Temporal-style durable workflow engine in Go. It includes an API server, worker runtime, PostgreSQL-backed state, idempotent enqueue, retries with exponential backoff, dead-letter handling, heartbeats, lease-based task claiming, OpenTelemetry spans, Prometheus metrics, and a CLI.
+[![CI](https://github.com/stemitom/workrail/actions/workflows/ci.yml/badge.svg)](https://github.com/stemitom/workrail/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/stemitom/workrail.svg)](https://pkg.go.dev/github.com/stemitom/workrail)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/stemitom/workrail)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-```bash
-go get github.com/stemitom/workrail
-```
-
-See `examples/embedded` for registering workflows and running a worker inside
-your own service, and `examples/payments` for a complete application — a
-payouts service with a ledger, a fake ACH rail, and reproducible failure
-scenarios.
-
-## Quick Start
-
-```bash
-docker compose up --build
-```
-
-The API listens on `http://localhost:8080`.
-Worker Prometheus metrics listen on `http://localhost:9090` in Docker Compose.
-
-```bash
-go run ./cmd/workrail migrate up
-go run ./cmd/workrail enqueue --queue default --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
-go run ./cmd/workrail enqueue --queue default --type sleep --payload '{"seconds":1}' --delay 30s
-go run ./cmd/workrail list
-go run ./cmd/workrail list --queue default
-go run ./cmd/workrail list --status dead_letter
-go run ./cmd/workrail inspect <job-id>
-go run ./cmd/workrail dlq list
-go run ./cmd/workrail dlq retry <job-id>
-go run ./cmd/workrail cancel <job-id>
-go run ./cmd/workrail replay <job-id>
-```
-
-CLI commands print compact tables for humans by default. Add `--json` to `enqueue`, `list`, `inspect`, and `dlq` commands when scripting.
-
-Use a config file instead of environment variables:
-
-```bash
-cp workrail.example.yaml workrail.yaml
-go run ./cmd/workrail --config workrail.yaml api
-go run ./cmd/workrail --config workrail.yaml worker
-```
-
-Run the Postgres-backed integration tests against a local database:
-
-```bash
-go run ./cmd/workrail migrate up
-make integration-test
-```
-
-## Architecture
-
-- `cmd/workrail`: single binary with `api`, `worker`, and CLI commands.
-- `workrail.go`: public Go SDK for embedding clients and workers.
-- `internal/engine`: job model, state machine, workflow registry, worker runtime.
-- `internal/store/postgres`: durable SQL implementation using row locks and leases.
-- `internal/observability`: OpenTelemetry and Prometheus setup.
-- `migrations`: versioned PostgreSQL migrations.
-
-## State Machine
-
-```text
-queued -> running -> succeeded
-   |         |   \-> retrying -> running (after backoff)
-   |         \-----> dead_letter
-   \---------------> canceled
-```
-
-Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path. Workers also run a periodic sweep (every lease duration, across all queues) that moves running jobs with expired leases and exhausted attempts to `dead_letter`, so a job that repeatedly kills its worker cannot loop forever. When a worker's heartbeat is rejected — its lease was reclaimed or the job was canceled — it cancels the workflow context and stops executing that job; if heartbeats keep failing for any other reason, the worker cancels the job before its unrenewed lease expires rather than finish work it may no longer own.
-
-Workers stop claiming new jobs when their process context is canceled. In-flight jobs are allowed to drain for `WORKRAIL_SHUTDOWN_TIMEOUT`; if that timeout elapses, Workrail cancels the in-flight workflow contexts so jobs can fail or be reclaimed by lease expiry. Workflow panics are recovered and recorded as job failures, so a single bad workflow does not crash the worker process.
-
-## Durable Steps
-
-Workflows can checkpoint intermediate results so retries resume after the last completed step instead of redoing work:
+A mini Temporal-style durable workflow engine in Go, backed by PostgreSQL: a single binary with an API server, worker runtime, and embedded dashboard. Workflows checkpoint steps, wait on timers/signals/children without holding worker slots, retry with backoff, and unwind with compensation when they dead-letter.
 
 ```go
 client.Register("order", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
@@ -92,17 +22,38 @@ client.Register("order", func(ctx context.Context, payload json.RawMessage) (jso
 })
 ```
 
-If `send-receipt` fails, the retry skips `charge-card` and returns its saved result instead of charging again. The guarantee is effectively once, not exactly once: a crash in the window between a step's side effect and its checkpoint commit re-runs the step on the next attempt, so steps whose side effects must never repeat should be idempotent (e.g. pass an idempotency key to the payment provider). A worker that loses its lease is rejected on its next checkpoint write, stopping zombie execution at the next step boundary.
+If `send-receipt` fails, the retry skips `charge-card` and returns its saved result instead of charging again.
+
+## Get started
+
+```bash
+docker compose up --build
+go run ./cmd/workrail migrate up
+go run ./cmd/workrail enqueue --queue default --type echo --payload '{"message":"hello"}' --idempotency-key demo-1
+go run ./cmd/workrail list
+```
+
+The API listens on `http://localhost:8080` (dashboard at `/ui`), worker Prometheus metrics on `http://localhost:9090` in Docker Compose. See `examples/embedded` for registering workflows inside your own service, and `examples/payments` for a complete payouts service with a ledger, a fake ACH rail, and reproducible failure scenarios.
+
+## When to use Workrail
+
+- Background jobs that must survive restarts, with retries, deadlines, and an audit trail — not fire-and-forget tasks.
+- Multi-step workflows where steps checkpoint, waits suspend without holding workers, and failures unwind with compensation.
+- Postgres-backed simplicity: one binary plus the database you already run. No broker, no extra state store, no separate scheduler.
+
+Prefer a plain queue (Sidekiq, BullMQ, Celery) for high-throughput fire-and-forget work with no durability-after-completion needs. Prefer Temporal for polyglot workers, global scale, push-latency signals at volume, versioned decade-long workflows, or a hosted cloud.
+
+## Features
+
+### Durable execution
+
+Workflows checkpoint intermediate results so retries resume after the last completed step instead of redoing work. The guarantee is effectively once, not exactly once: a crash in the window between a step's side effect and its checkpoint commit re-runs the step on the next attempt, so steps whose side effects must never repeat should be idempotent (e.g. pass an idempotency key to the payment provider). A worker that loses its lease is rejected on its next checkpoint write, stopping zombie execution at the next step boundary.
 
 Step results persist in `job_steps`, appear as `job.step_completed` events in `workrail inspect`, survive dead-letter retries (`dlq retry` resumes; use `replay` for a genuinely fresh run), and are deleted with their job. Keep step names, and result types, stable while jobs are in flight — a renamed step re-runs, and a checkpoint that no longer decodes into the step's type fails the job. Results are stored as normalized `jsonb`; don't rely on byte-identical output. The built-in `sequence` workflow checkpoints each of its steps automatically and rejects duplicate step names.
 
-## Retries and Permanent Failures
+Register orchestration with `client.Register` and side effects with `client.RegisterActivity`. Workflows must reach the world through `Step`, `Sleep`, `WaitSignal`, or `workrail.ExecuteActivity` — never inline — so retries replay checkpoints instead of repeating side effects. Each activity runs in its own checkpoint scope, so same-named steps in different activities stay independent. Enqueueing an activity type runs it as a single-step job.
 
-A failed attempt is retried with exponential backoff until `max_attempts` is
-spent, then dead-lettered. Some failures should not be retried at all — a
-closed account, a rejected transfer, a payload that will never parse — and
-spending four more attempts on them delays the operator and re-sends requests
-the provider has already refused. Wrap those in `workrail.Permanent`:
+A failed attempt is retried with exponential backoff until `max_attempts` is spent, then dead-lettered. Some failures should not be retried at all — a closed account, a rejected transfer, a payload that will never parse. Wrap those in `workrail.Permanent`:
 
 ```go
 charge, err := workrail.Step(ctx, "charge-card", func(ctx context.Context) (Charge, error) {
@@ -114,20 +65,11 @@ charge, err := workrail.Step(ctx, "charge-card", func(ctx context.Context) (Char
 })
 ```
 
-A permanent failure dead-letters the job on the spot with its remaining
-attempts unspent, and records `"permanent": true` on the `job.failed` event so
-the skipped retries are visible rather than mysterious. The wrapped error keeps
-its message and still unwraps to its cause, so `errors.Is` on the original
-sentinel keeps working. `workrail.IsPermanent` reports whether an error was
-marked. Dead-lettered jobs are never pruned and never retried automatically —
-`dlq retry` resumes one from its last checkpoint once the underlying problem is
-fixed.
+A permanent failure dead-letters the job on the spot with its remaining attempts unspent, and records `"permanent": true` on the `job.failed` event so the skipped retries are visible rather than mysterious. The wrapped error keeps its message and still unwraps to its cause, so `errors.Is` on the original sentinel keeps working. `workrail.IsPermanent` reports whether an error was marked. Dead-lettered jobs are never pruned and never retried automatically — `dlq retry` resumes one from its last checkpoint once the underlying problem is fixed.
 
-## Signals
+### Waiting without holding workers
 
-Workflows can wait for the world, not just for time. `workrail.WaitSignal`
-parks the job without holding a worker slot until a signal arrives; the first
-delivery checkpoints, so every resumed run and retry sees the same payload:
+`workrail.Sleep` parks a job until a deadline, `workrail.WaitSignal` parks it until the world responds, and `workrail.ExecuteChild` parks a parent until its child succeeds — all without holding a worker slot, and none consume retry attempts. Keep wait names stable and unique per workflow, like Steps.
 
 ```go
 approval, err := workrail.WaitSignal[Approval](ctx, "approval")
@@ -136,12 +78,7 @@ if err != nil {
 }
 ```
 
-`workrail.WaitSignalAt` consumes the index-th delivery under a name, so a
-workflow can read a stream of signals in order. Keep names stable and the wait
-order deterministic, like Steps — a wait past the last delivery suspends until
-more signals arrive.
-
-Deliver from Go, HTTP, or the CLI:
+`workrail.WaitSignalAt` consumes the index-th delivery under a name, so a workflow can read a stream of signals in order. Deliver from Go, HTTP, or the CLI:
 
 ```go
 err := client.Signal(ctx, jobID, "approval", Approval{By: "ops", OK: true})
@@ -154,19 +91,9 @@ curl -X POST localhost:8080/jobs/<job-id>/signals \
 go run ./cmd/workrail signal <job-id> --name approval --payload '{"ok":true}'
 ```
 
-Pass an idempotency key (`idempotency_key` in the API, `--idempotency-key`
-on the CLI, `workrail.WithSignalIdempotencyKey` in Go) and retried sends
-dedupe to a Noop instead of appending a second row — safe to repeat webhooks.
+Pass an idempotency key (`idempotency_key` in the API, `--idempotency-key` on the CLI, `workrail.WithSignalIdempotencyKey` in Go) and retried sends dedupe to a Noop instead of appending a second row — safe to repeat webhooks. A signal wakes a parked waiter at once: delivery fast-forwards the job's `run_after` in the same transaction, so the next worker poll (about a second by default) reclaims it. If anything is missed the wait naps 5 seconds between mailbox checks. Signaling a finished job fails, as does signaling an unknown one.
 
-A signal wakes a parked waiter at once: delivery fast-forwards the job's
-`run_after` in the same transaction, so the next worker poll (about a second
-by default) reclaims it. If anything is missed the wait naps 5 seconds
-between mailbox checks, costing no slot and no retry attempt.
-Signaling a finished job fails, as does signaling an unknown one.
-
-## Child Workflows
-
-A workflow can call a whole other workflow and wait for its result:
+A workflow can also call a whole other workflow and wait for its result:
 
 ```go
 result, err := workrail.ExecuteChild[Settlement](ctx, "settle", "settlement", settlementJob{PayoutID: job.PayoutID})
@@ -175,18 +102,11 @@ if err != nil {
 }
 ```
 
-The child is a real job with its own attempt budget and checkpoints, running
-on the parent's queue; the parent suspends without holding a slot until the
-child succeeds. The child identity is checkpointed, so resumed runs and
-retries watch the same child instead of spawning another. A dead-lettered or
-canceled child fails the parent permanently — retrying would only re-watch a
-finished child.
+The child is a real job with its own attempt budget and checkpoints, running on the parent's queue. The child identity is checkpointed, so resumed runs and retries watch the same child instead of spawning another. A dead-lettered or canceled child fails the parent permanently — retrying would only re-watch a finished child.
 
-## Compensation
+### Unwinding failures
 
-Register an unwind hook per workflow type and it runs once when a job of that
-type dead-letters — whether attempts ran out or the lease-expiry sweep
-reaped a crash-looping job:
+Register an unwind hook per workflow type and it runs once when a job of that type dead-letters — whether attempts ran out or the lease-expiry sweep reaped a crash-looping job:
 
 ```go
 client.RegisterCompensation("payout", func(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
@@ -194,42 +114,9 @@ client.RegisterCompensation("payout", func(ctx context.Context, payload json.Raw
 })
 ```
 
-Compensations run outside any lease, so they cannot use `Step`, `Sleep`, or
-`WaitSignal`: keep them to plain idempotent activities. Outcomes land in the
-event history as `job.compensated` / `job.compensation_failed`. Types without
-a hook dead-letter silently, as before. There is no cancel propagation to
-children: each job stands on its own.
+Compensations run outside any lease, so they cannot use `Step`, `Sleep`, or `WaitSignal`: keep them to plain idempotent activities. Outcomes land in the event history as `job.compensated` / `job.compensation_failed`. Types without a hook dead-letter silently, as before. There is no cancel propagation to children: each job stands on its own.
 
-## Dashboard
-
-The API server ships an embedded web dashboard at `http://localhost:8080/ui` — no separate process, no JavaScript build. It shows queue depths by status, a filterable and paginated job list, and a per-job view with checkpointed steps, payload/result, the event history, and retry/cancel/replay actions. Jobs waiting on a timer, signal, or child show a parked badge with their wake time; the job view adds the signal mailbox with a send-signal form, parent/children lineage, and colored history for signals, suspensions, permanent failures, and compensations. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
-
-## Security
-
-Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.
-
-### Redaction
-
-Workflow payloads carry whatever the application put in them, and the dashboard
-renders payloads, results, step checkpoints, and event details verbatim to
-anyone holding a session. Set `dashboard.redact_fields` (or
-`WORKRAIL_REDACT_FIELDS=account_number,ssn`) to mask those fields wherever the
-dashboard prints JSON. Matching is case-insensitive and ignores `-` and `_`, so
-one entry covers `account_number`, `accountNumber`, and `Account-Number`, and
-it applies at every depth including inside arrays.
-
-Redaction deliberately does not extend to the JSON API: that surface
-authenticates with the bearer token, which a dashboard session cannot use, and
-its machine callers need the real payload. Nor does it protect data at rest —
-the payload is still stored unencrypted in `jobs.payload`. Treat it as keeping
-sensitive values off an operator's screen, not as a substitute for keeping them
-out of payloads.
-
-## Retention
-
-Retention is off by default. Set `worker.retention` (or `WORKRAIL_RETENTION`) to e.g. `168h` and workers will prune `succeeded` and `canceled` jobs (and their events) in their own queue older than that, in bounded batches during the periodic sweep. Invalid duration values fail at startup rather than silently defaulting. Dead-lettered jobs are never pruned automatically — they wait for an operator.
-
-## Operations
+### Operating
 
 List recent jobs:
 
@@ -255,6 +142,12 @@ go run ./cmd/workrail dlq retry <job-id>
 
 Retrying a dead-lettered job moves it back to `queued`, clears the last error, and resets the attempt counter.
 
+Schedule work for later:
+
+```bash
+go run ./cmd/workrail enqueue --queue default --type sleep --payload '{"seconds":1}' --delay 30s
+```
+
 Named queues let different worker pools own different classes of work:
 
 ```bash
@@ -265,9 +158,22 @@ WORKRAIL_QUEUE=billing go run ./cmd/workrail worker
 
 Workers only claim jobs from their configured queue. Jobs default to the `default` queue when no queue is provided.
 
-## Metrics
+CLI commands print compact tables for humans by default. Add `--json` to `enqueue`, `list`, `inspect`, and `dlq` commands when scripting.
 
-The API exposes Prometheus metrics at `/metrics`. Standalone workers expose metrics on `WORKRAIL_WORKER_METRICS_ADDR`, defaulting to `:9090`.
+Retention is off by default. Set `worker.retention` (or `WORKRAIL_RETENTION`) to e.g. `168h` and workers will prune `succeeded` and `canceled` jobs (and their events) in their own queue older than that, in bounded batches during the periodic sweep. Invalid duration values fail at startup rather than silently defaulting. Dead-lettered jobs are never pruned automatically — they wait for an operator.
+
+### Observing
+
+The embedded web dashboard at `http://localhost:8080/ui` needs no separate process and no JavaScript build. It leads with runs needing attention, shows queue depths, a filterable and paginated job list, and a per-job view with a chronological execution path, checkpointed steps, the signal mailbox (with a send-signal form), parent/children lineage, payload/result, event history, and retry/cancel/replay/signal actions. The overview and job list update in place every few seconds without reloading. It follows the system light/dark preference. When an auth token is configured the dashboard signs in with it at `/ui/login` (session cookie; the JSON API keeps using bearer tokens).
+
+Workrail exports OpenTelemetry traces over OTLP/gRPC and Prometheus metrics from the API (`/metrics`) and standalone workers (`WORKRAIL_WORKER_METRICS_ADDR`, default `:9090`):
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: localhost:4317
+  insecure: true
+```
 
 Key metrics include:
 
@@ -280,49 +186,39 @@ Key metrics include:
 - `workrail_worker_configured_concurrency{worker_id,queue}`
 - `workrail_queue_depth{queue,status}`
 
-## Tracing
-
-Workrail can export OpenTelemetry traces over OTLP/gRPC:
-
-```yaml
-tracing:
-  enabled: true
-  endpoint: localhost:4317
-  insecure: true
-```
-
-Environment overrides are also available:
+Environment overrides for tracing are also available:
 
 - `WORKRAIL_TRACING_ENABLED`: set to `true` or `1` to enable OTLP export.
 - `WORKRAIL_OTLP_ENDPOINT`: OTLP/gRPC endpoint, for example `localhost:4317`. Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_ENDPOINT` are also honored.
 - `WORKRAIL_OTLP_INSECURE`: set to `true` or `1` for plaintext local collectors.
 
-## Workflow Definitions
+## Architecture
 
-Register orchestration with `client.Register` and side effects with
-`client.RegisterActivity`. Workflows must reach the world through `Step`,
-`Sleep`, `WaitSignal`, or `workrail.ExecuteActivity` — never inline — so
-retries replay checkpoints instead of repeating side effects. Each activity
-runs in its own checkpoint scope, so same-named steps in different activities
-stay independent. Enqueueing an activity type runs it as a single-step job.
+- `cmd/workrail`: single binary with `api`, `worker`, and CLI commands.
+- `workrail.go`: public Go SDK for embedding clients and workers.
+- `internal/engine`: job model, state machine, workflow registry, worker runtime.
+- `internal/store/postgres`: durable SQL implementation using row locks and leases.
+- `internal/observability`: OpenTelemetry and Prometheus setup.
+- `migrations`: versioned PostgreSQL migrations.
 
-Built-in activities (`echo`, `sleep`) and the `sequence` workflow live in `internal/engine`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:
-
-```yaml
-steps:
-  - name: first
-    activity: echo
-    input:
-      message: hello
-  - name: wait
-    activity: sleep
-    input:
-      seconds: 2
+```text
+queued -> running -> succeeded
+   |         |   \-> retrying -> running (after backoff)
+   |         \-----> dead_letter
+   \---------------> canceled
 ```
+
+Workers claim tasks with `FOR UPDATE SKIP LOCKED`, set a lease deadline, emit heartbeats, and complete or fail the job transactionally. Expired leases are reclaimed by later claims, which is the core failure recovery path. Workers also run a periodic sweep (every lease duration, across all queues) that moves running jobs with expired leases and exhausted attempts to `dead_letter`, so a job that repeatedly kills its worker cannot loop forever. When a worker's heartbeat is rejected — its lease was reclaimed or the job was canceled — it cancels the workflow context and stops executing that job; if heartbeats keep failing for any other reason, the worker cancels the job before its unrenewed lease expires rather than finish work it may no longer own.
+
+Workers stop claiming new jobs when their process context is canceled. In-flight jobs are allowed to drain for `WORKRAIL_SHUTDOWN_TIMEOUT`; if that timeout elapses, Workrail cancels the in-flight workflow contexts so jobs can fail or be reclaimed by lease expiry. Workflow panics are recovered and recorded as job failures, so a single bad workflow does not crash the worker process.
 
 ## Go SDK
 
-Applications can embed a worker and register workflows directly:
+Applications can embed a worker and register workflows directly. Install with:
+
+```bash
+go get github.com/stemitom/workrail
+```
 
 ```go
 client, err := workrail.Open(ctx, workrail.Options{
@@ -348,16 +244,31 @@ job, inserted, err := client.EnqueueJSON(ctx, "send_email", map[string]any{
 }, workrail.WithQueue("emails"), workrail.WithIdempotencyKey("welcome-email-user_123"))
 ```
 
-Enqueue options: `WithQueue`, `WithIdempotencyKey`, `WithMaxAttempts`, and
-`WithRunAfter` (the job stays unclaimable until that time — a delayed retry, or
-a check scheduled for later). `workrail.Permanent` marks an error as
-non-retryable; `workrail.Step` checkpoints a result.
+Enqueue options: `WithQueue`, `WithIdempotencyKey`, `WithMaxAttempts`, and `WithRunAfter` (the job stays unclaimable until that time — a delayed retry, or a check scheduled for later). `workrail.Permanent` marks an error as non-retryable; `workrail.Step` checkpoints a result.
 
-`examples/payments` puts all of these together in a working payouts service.
+`examples/payments` puts all of these together in a working payouts service. Built-in activities (`echo`, `sleep`) and the `sequence` workflow live in `internal/engine`. JSON/YAML workflow specs can be submitted as payloads for the `sequence` workflow:
 
-## Environment
+```yaml
+steps:
+  - name: first
+    activity: echo
+    input:
+      message: hello
+  - name: wait
+    activity: sleep
+    input:
+      seconds: 2
+```
 
-Workrail loads defaults first, then `workrail.yaml` if it exists, then environment variables. Set `WORKRAIL_CONFIG=/path/to/workrail.yaml` or pass `--config /path/to/workrail.yaml` before the command.
+## Configuration
+
+Workrail loads defaults first, then `workrail.yaml` if it exists, then environment variables. Set `WORKRAIL_CONFIG=/path/to/workrail.yaml` or pass `--config /path/to/workrail.yaml` before the command:
+
+```bash
+cp workrail.example.yaml workrail.yaml
+go run ./cmd/workrail --config workrail.yaml api
+go run ./cmd/workrail --config workrail.yaml worker
+```
 
 - `DATABASE_URL`: PostgreSQL connection string. Defaults to `postgres://durable:durable@localhost:5432/durable?sslmode=disable`.
 - `WORKRAIL_API_ADDR`: API listen address. Defaults to `:8080`.
@@ -370,6 +281,14 @@ Workrail loads defaults first, then `workrail.yaml` if it exists, then environme
 - `WORKRAIL_REDACT_FIELDS`: comma-separated JSON field names masked in everything the dashboard renders.
 - `WORKRAIL_RETENTION`: prune succeeded and canceled jobs older than this. Defaults to off.
 
+Set `api.auth_token` in the config file (or `WORKRAIL_API_TOKEN`) to require `Authorization: Bearer <token>` on every API endpoint except `GET /healthz`. With no token configured the API is open and logs a warning at startup — do not run it that way outside local development. Prometheus can scrape the protected `/metrics` endpoint with `authorization.credentials` in its scrape config.
+
+### Redaction
+
+Workflow payloads carry whatever the application put in them, and the dashboard renders payloads, results, step checkpoints, and event details verbatim to anyone holding a session. Set `dashboard.redact_fields` (or `WORKRAIL_REDACT_FIELDS=account_number,ssn`) to mask those fields wherever the dashboard prints JSON. Matching is case-insensitive and ignores `-` and `_`, so one entry covers `account_number`, `accountNumber`, and `Account-Number`, and it applies at every depth including inside arrays.
+
+Redaction deliberately does not extend to the JSON API: that surface authenticates with the bearer token, which a dashboard session cannot use, and its machine callers need the real payload. Nor does it protect data at rest — the payload is still stored unencrypted in `jobs.payload`. Treat it as keeping sensitive values off an operator's screen, not as a substitute for keeping them out of payloads.
+
 ## Migrations
 
 Run all pending migrations:
@@ -379,3 +298,18 @@ go run ./cmd/workrail migrate up
 ```
 
 Workrail records applied versions in `schema_migrations`, so rerunning the command is safe. Migration files must be named like `001_init.sql`.
+
+Run the Postgres-backed integration tests against a migrated database:
+
+```bash
+go run ./cmd/workrail migrate up
+make integration-test
+```
+
+## Contributing
+
+Issues and pull requests are welcome. Please include a failing test with bug fixes, run `gofmt` and the full suite (`go test ./...` plus `make integration-test` against a local Postgres) before pushing, and keep changes minimal — the shortest working diff wins.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
